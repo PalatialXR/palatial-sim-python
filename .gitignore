@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.Python
+venv/
+.env
+
+# Project specific
+*.pth
+segmentation_result.png
+segmentation_results_*.png
+*.jpg
+*.jpeg
+*.png
+
+# IDE
+.vscode/
+.idea/
+
+# System
+.DS_Store
+Thumbs.db
