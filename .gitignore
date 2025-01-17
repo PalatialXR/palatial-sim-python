@@ -2,22 +2,41 @@
 __pycache__/
 *.py[cod]
 *$py.class
+*.so
 .Python
-venv/
-.env
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
 
-# Project specific
-*.pth
-segmentation_result.png
-segmentation_results_*.png
-*.jpg
-*.jpeg
-*.png
+# Virtual Environment
+venv/
+ENV/
+env/
 
 # IDE
-.vscode/
 .idea/
+.vscode/
+*.swp
+*.swo
 
-# System
-.DS_Store
-Thumbs.db
+# Project specific
+.env
+results/
+segmentation_output_*/
+*.jpg
+*.png
+*.obj
+*.mtl
+*.log
