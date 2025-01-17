@@ -5,6 +5,7 @@ from dotenv import load_dotenv
 from PIL import Image
 import logging
 from segmentation.segmenter import SemanticSegmenter
+from conversion.meshy_converter import MeshyConverter
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -34,6 +35,10 @@ def main():
                        help="Temperature for Gemini generation")
     parser.add_argument("--debug", action="store_true",
                        help="Enable debug mode with visualizations")
+    
+    # 3D conversion options
+    parser.add_argument("--convert-3d", action="store_true",
+                       help="Enable 3D model conversion using Meshy API")
     
     args = parser.parse_args()
     
@@ -70,19 +75,38 @@ def main():
         )
         logger.info(f"Generated {len(masks)} masks using Gemini guidance")
     
-    # Save results
-    logger.info(f"Saving results to {args.output_dir}")
+    # Save segmentation results
+    logger.info(f"Saving segmentation results to {args.output_dir}")
     metadata = segmenter.save_results(args.output_dir)
-    logger.info(f"Results saved successfully. Visualization at: {metadata['visualization_path']}")
+    logger.info(f"Segmentation results saved successfully. Visualization at: {metadata['visualization_path']}")
+    
+    # Convert to 3D if requested
+    if args.convert_3d:
+        logger.info("Starting 3D model conversion...")
+        meshy_api_key = os.getenv("MESHY_API_KEY")
+        if not meshy_api_key:
+            raise ValueError("MESHY_API_KEY not found in environment variables")
+            
+        converter = MeshyConverter(meshy_api_key)
+        segmentation_dir = os.path.dirname(metadata["visualization_path"])
+        output_dir = os.path.join(args.output_dir, "models", f"output_{metadata['timestamp']}")
+        
+        conversion_results = converter.convert_segments_to_3d(
+            segmentation_dir=segmentation_dir,
+            output_dir=output_dir
+        )
+        logger.info(f"3D conversion completed. Results saved to: {output_dir}")
     
     # Print summary
     print("\nSegmentation Summary:")
     print(f"- Pipeline: {args.pipeline}")
     print(f"- Objects detected: {len(masks)}")
     print(f"- Average confidence: {scores.mean():.3f}")
-    print(f"- Results saved to: {args.output_dir}")
+    print(f"- Segmentation results: {args.output_dir}")
     if args.debug:
-        print(f"- Debug files saved to: debug/gemini_debug_*")
+        print(f"- Debug files: debug/gemini_debug_*")
+    if args.convert_3d:
+        print(f"- 3D models: {output_dir}")
 
 if __name__ == "__main__":
     main() 

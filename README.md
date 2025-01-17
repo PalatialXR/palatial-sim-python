@@ -129,6 +129,13 @@ Process an image using Gemini's spatial understanding:
 python src/main.py --image path/to/image.jpg --pipeline gemini --max-objects 10 --point-offset 0.2 --debug
 ```
 
+### 3D Model Conversion
+
+By default, the tool only performs segmentation. To also generate 3D models:
+```bash
+python src/main.py --image path/to/image.jpg --pipeline auto --convert-3d
+```
+
 ### Advanced Options
 
 - `--output-dir`: Specify custom output directory
@@ -137,6 +144,7 @@ python src/main.py --image path/to/image.jpg --pipeline gemini --max-objects 10 
 - `--point-offset`: Offset ratio for point selection (Gemini pipeline)
 - `--temperature`: Temperature for Gemini generation
 - `--debug`: Enable debug visualizations
+- `--convert-3d`: Enable 3D model conversion (requires Meshy API key)
 
 ## Output Structure
 
