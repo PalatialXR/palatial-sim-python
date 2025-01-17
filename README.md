@@ -1,14 +1,18 @@
 # Segment Annotate
 
-A tool for semantic segmentation, object description, and 3D model conversion. This tool uses SAM2 for segmentation, GPT-4 Vision for object description, and Meshy API for 3D model conversion.
+A tool for semantic segmentation, object description, and 3D model conversion. This tool combines SAM2 for segmentation, Gemini for spatial understanding, GPT-4 Vision for object description, and Meshy API for 3D model conversion.
 
 ## Project Workflow
 
 ```mermaid
 graph TD
-    A[Input Image] --> B[Image Segmentation]
-    B --> C[Mask Generation]
-    C --> D[Post-processing]
+    A[Input Image] --> B1[Automatic Segmentation]
+    A --> B2[Gemini-guided Segmentation]
+    B1 --> C1[SAM2 Grid Points]
+    B2 --> C2[Gemini 3D Analysis]
+    C2 --> C3[SAM2 Point Selection]
+    C1 --> D[Mask Generation]
+    C3 --> D
     D --> E[High-confidence Masks]
     E --> F[Physical Description]
     E --> G[3D Model Conversion]
@@ -18,14 +22,21 @@ graph TD
 
 ## Features
 
-- **Semantic Segmentation**
-  - Uses SAM2 (Segment Anything Model 2)
-  - Automatic mask generation
-  - High-confidence mask filtering
-  - Post-processing for better object boundaries
+- **Segmentation Pipelines**
+  - **Automatic Segmentation**
+    - Uses SAM2 (Segment Anything Model 2)
+    - Grid-based point selection
+    - High-confidence mask filtering
+    - Post-processing for better object boundaries
+  
+  - **Gemini-guided Segmentation**
+    - Gemini 2.0 Flash for spatial understanding
+    - 3D bounding box detection
+    - Intelligent point selection (5 points per object)
+    - Improved accuracy for complex objects
 
 - **Physical Object Description**
-  - GPT-4o mini analysis with structured output
+  - GPT-4 Vision analysis with structured output
   - Material properties detection
   - Geometric measurements
   - Physical characteristics estimation
@@ -44,6 +55,8 @@ segment_annotate/
 ├── src/                        # Source code
 │   ├── segmentation/          # Segmentation module
 │   │   ├── segmenter.py      # Core segmentation
+│   │   ├── spatial_analyzer.py # Gemini integration
+│   │   ├── interactive_segmenter.py # SAM2 interface
 │   │   └── description_generator.py  # GPT-4 Vision
 │   ├── models/               # Data models
 │   │   └── physical_properties.py  # Property schemas
@@ -60,6 +73,10 @@ segment_annotate/
 │       └── output_TIMESTAMP/
 │           ├── 3d_models/   # Generated OBJ files
 │           └── metadata/    # Conversion results
+├── debug/                   # Debug visualizations
+│   └── gemini_debug_TIMESTAMP/
+│       ├── gemini_analysis.png  # Box/point visualization
+│       └── gemini_boxes.json    # Raw Gemini data
 ├── requirements.txt         # Dependencies
 └── .env                    # API keys
 ```
@@ -87,34 +104,39 @@ pip install -r requirements.txt
 ```env
 OPENAI_API_KEY=your_openai_api_key
 MESHY_API_KEY=your_meshy_api_key
+GOOGLE_API_KEY=your_google_api_key
+```
+
+5. Download the SAM2 checkpoint:
+```bash
+mkdir -p checkpoints
+wget -P checkpoints/ https://dl.fbaipublicfiles.com/segment_anything_2/092824/sam2.1_hiera_large.pt
 ```
 
 ## Usage
 
-### Basic Usage
+### Automatic Segmentation
 
-Process a single image with all features:
+Process an image using the automatic grid-based segmentation:
 ```bash
-python src/main.py --image path/to/your/image.jpg
+python src/main.py --image path/to/image.jpg --pipeline auto --max-objects 20
 ```
 
-This will:
-1. Segment the image into objects
-2. Generate physical descriptions
-3. Convert segments to 3D models
-4. Save all results in timestamped directories
+### Gemini-guided Segmentation
 
-### Advanced Usage
-
-Process existing segmentation results:
+Process an image using Gemini's spatial understanding:
 ```bash
-python src/main.py --segmentation-dir results/segmentation/output_TIMESTAMP
+python src/main.py --image path/to/image.jpg --pipeline gemini --max-objects 10 --point-offset 0.2 --debug
 ```
 
-Specify custom output directory:
-```bash
-python src/main.py --image input.jpg --output-dir custom/output/path
-```
+### Advanced Options
+
+- `--output-dir`: Specify custom output directory
+- `--checkpoint`: Path to SAM2 checkpoint
+- `--model-cfg`: Path to SAM2 model config
+- `--point-offset`: Offset ratio for point selection (Gemini pipeline)
+- `--temperature`: Temperature for Gemini generation
+- `--debug`: Enable debug visualizations
 
 ## Output Structure
 
@@ -131,6 +153,10 @@ Each run creates timestamped directories:
 ### 3D Models Output (`results/models/output_TIMESTAMP/`)
 - `3d_models/`: Generated OBJ files
 - `3d_conversion_results.json`: Conversion metadata and results
+
+### Debug Output (`debug/gemini_debug_TIMESTAMP/`)
+- `gemini_analysis.png`: Visualization of Gemini's analysis
+- `gemini_boxes.json`: Raw 3D box data from Gemini
 
 ## Physical Properties
 
@@ -163,8 +189,9 @@ The tool analyzes several physical properties for each segment:
 
 - Python 3.8+
 - CUDA-capable GPU (recommended)
-- OpenAI API key (for GPT-4o mini)
+- OpenAI API key (for GPT-4 Vision)
 - Meshy API key (for 3D conversion)
+- Google API key (for Gemini)
 
 ## License
 
