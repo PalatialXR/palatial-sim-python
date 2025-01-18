@@ -13,32 +13,19 @@ class InteractiveSegmenter:
     Supports both automatic and point-based segmentation
     """
     
-    def __init__(self, checkpoint_path: Union[str, Path], model_cfg: str = "configs/sam2.1/sam2.1_hiera_l.yaml"):
-        """
-        Initialize the SAM2 model and predictor
+    def __init__(self, model_name: str = "facebook/sam2.1-hiera-large", device: str = "cuda"):
+        """Initialize the interactive segmenter with SAM2
         
         Args:
-            checkpoint_path: Path to the SAM2 model checkpoint
-            model_cfg: Path to the model configuration file
+            model_name: HuggingFace model name or path
+            device: Device to run model on
         """
-        # Select device
-        if torch.cuda.is_available():
-            device = torch.device("cuda")
-            # Use bfloat16 for better performance
-            torch.autocast("cuda", dtype=torch.bfloat16).__enter__()
-            # Enable TF32 for Ampere GPUs
-            if torch.cuda.get_device_properties(0).major >= 8:
-                torch.backends.cuda.matmul.allow_tf32 = True
-                torch.backends.cudnn.allow_tf32 = True
-        elif torch.backends.mps.is_available():
-            device = torch.device("mps")
-        else:
-            device = torch.device("cpu")
-            
         self.device = device
-        self.model = build_sam2(model_cfg, checkpoint_path, device=device)
-        self.predictor = SAM2ImagePredictor(self.model)
-        self._current_image = None
+        self.model_name = model_name
+        
+        # Initialize SAM2 model
+        self.predictor = SAM2ImagePredictor.from_pretrained(model_name)
+        self.image = None
         
     def set_image(self, image: Union[np.ndarray, Image.Image]) -> None:
         """
@@ -49,7 +36,7 @@ class InteractiveSegmenter:
         """
         if isinstance(image, Image.Image):
             image = np.array(image)
-        self._current_image = image
+        self.image = image
         self.predictor.set_image(image)
         
     def predict_from_points(self, 
@@ -71,7 +58,7 @@ class InteractiveSegmenter:
             scores: Confidence scores for each mask
             logits: Raw logits for each mask
         """
-        if self._current_image is None:
+        if self.image is None:
             raise ValueError("No image has been set. Call set_image() first.")
             
         return self.predictor.predict(
@@ -96,7 +83,7 @@ class InteractiveSegmenter:
             scores: Confidence scores for each mask
             logits: Raw logits for each mask
         """
-        if self._current_image is None:
+        if self.image is None:
             raise ValueError("No image has been set. Call set_image() first.")
             
         return self.predictor.predict(
@@ -154,10 +141,10 @@ class InteractiveSegmenter:
         Returns:
             visualization: RGB image with overlaid masks and prompts
         """
-        if self._current_image is None:
+        if self.image is None:
             raise ValueError("No image has been set. Call set_image() first.")
             
-        vis_image = self._current_image.copy()
+        vis_image = self.image.copy()
         
         # Overlay masks with different colors
         for mask, score in zip(masks, scores):

@@ -24,19 +24,36 @@ wheels/
 venv/
 ENV/
 env/
+.env
 
 # IDE
 .idea/
 .vscode/
 *.swp
 *.swo
+.DS_Store
 
 # Project specific
-.env
+checkpoints/
 results/
-segmentation_output_*/
-*.jpg
+debug/
+*.pt
+*.pth
+*.onnx
 *.png
+*.jpg
+*.jpeg
 *.obj
 *.mtl
 *.log
+
+# Keep example images and results
+!examples/*.png
+!examples/*.jpg
+!examples/results/*.png
+!examples/results/*.jpg
+
+# Documentation
+docs/_build/
+docs/_static/
+docs/_templates/

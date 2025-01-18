@@ -9,15 +9,21 @@ graph TD
     A[Input Image] --> B1[Automatic Segmentation]
     A --> B2[Gemini-guided Segmentation]
     B1 --> C1[SAM2 Grid Points]
-    B2 --> C2[Gemini 3D Analysis]
-    C2 --> C3[SAM2 Point Selection]
-    C1 --> D[Mask Generation]
-    C3 --> D
-    D --> E[High-confidence Masks]
-    E --> F[Physical Description]
-    E --> G[3D Model Conversion]
-    F --> H[JSON Descriptions]
-    G --> I[3D Models]
+    B2 --> C2[Gemini Analysis]
+    C2 --> D1[2D Box Detection]
+    C2 --> D2[3D Box Detection]
+    C2 --> D3[Direct Point Detection]
+    D1 --> E1[Point Generation]
+    D2 --> E1
+    D3 --> E2[Single Point]
+    C1 --> F[Mask Generation]
+    E1 --> F
+    E2 --> F
+    F --> G[High-confidence Masks]
+    G --> H[Physical Description]
+    G --> I[3D Model Conversion]
+    H --> J[JSON Descriptions]
+    I --> K[3D Models]
 ```
 
 ## Features
@@ -31,22 +37,28 @@ graph TD
   
   - **Gemini-guided Segmentation**
     - Gemini 2.0 Flash for spatial understanding
-    - 3D bounding box detection
-    - Intelligent point selection (5 points per object)
+    - Multiple detection modes:
+      - **2D Box Detection**: Precise rectangular boundaries
+      - **3D Box Detection**: Depth-aware object boundaries
+      - **Direct Point Detection**: Single-point object identification
+    - Intelligent point selection:
+      - Box modes: 5 points per object (corners + center)
+      - Point mode: Direct object center points
     - Improved accuracy for complex objects
 
 - **Physical Object Description**
-  - GPT-4 Vision analysis with structured output
-  - Material properties detection
+  - GPT-4 Vision analysis
+  - Material properties
   - Geometric measurements
-  - Physical characteristics estimation
-  - Detailed description of each segment
+  - Dynamic characteristics
+  - Interaction properties
 
 - **3D Model Conversion**
   - Meshy API integration
-  - Automatic topology selection
-  - Texture generation
-  - PBR material support
+  - Textured 3D models
+  - Multiple topology options
+  - Symmetry detection
+  - Automatic UV mapping
 
 ## Project Structure
 
@@ -124,9 +136,21 @@ python src/main.py --image path/to/image.jpg --pipeline auto --max-objects 20
 
 ### Gemini-guided Segmentation
 
-Process an image using Gemini's spatial understanding:
+Process an image using Gemini's spatial understanding with different modes:
+
+1. 2D Box Detection (Default):
 ```bash
-python src/main.py --image path/to/image.jpg --pipeline gemini --max-objects 10 --point-offset 0.2 --debug
+python src/main.py --image path/to/image.jpg --pipeline gemini --mode 2d --max-objects 10 --point-offset 0.2 --debug
+```
+
+2. 3D Box Detection:
+```bash
+python src/main.py --image path/to/image.jpg --pipeline gemini --mode 3d --max-objects 10 --point-offset 0.2 --debug
+```
+
+3. Direct Point Detection:
+```bash
+python src/main.py --image path/to/image.jpg --pipeline gemini --mode points --max-objects 10 --debug
 ```
 
 ### 3D Model Conversion
@@ -141,7 +165,7 @@ python src/main.py --image path/to/image.jpg --pipeline auto --convert-3d
 - `--output-dir`: Specify custom output directory
 - `--checkpoint`: Path to SAM2 checkpoint
 - `--model-cfg`: Path to SAM2 model config
-- `--point-offset`: Offset ratio for point selection (Gemini pipeline)
+- `--point-offset`: Offset ratio for point selection (Box modes only)
 - `--temperature`: Temperature for Gemini generation
 - `--debug`: Enable debug visualizations
 - `--convert-3d`: Enable 3D model conversion (requires Meshy API key)
@@ -158,13 +182,14 @@ Each run creates timestamped directories:
 - `masks_metadata.json`: Mask metadata
 - `segmentation_visualization.png`: Visual overlay of segments
 
+### Debug Output (`debug/gemini_debug_TIMESTAMP/`)
+- `gemini_analysis.png`: Visualization of detected boxes/points
+- `gemini_boxes.json`: Raw detection data from Gemini
+- `gemini_points.json`: Point detection data (points mode only)
+
 ### 3D Models Output (`results/models/output_TIMESTAMP/`)
 - `3d_models/`: Generated OBJ files
 - `3d_conversion_results.json`: Conversion metadata and results
-
-### Debug Output (`debug/gemini_debug_TIMESTAMP/`)
-- `gemini_analysis.png`: Visualization of Gemini's analysis
-- `gemini_boxes.json`: Raw 3D box data from Gemini
 
 ## Physical Properties
 
