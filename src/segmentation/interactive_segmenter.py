@@ -122,55 +122,49 @@ class InteractiveSegmenter:
             multimask_output=multimask_output
         )
         
-    def visualize_masks(self, 
-                       masks: np.ndarray,
-                       scores: np.ndarray,
-                       points: Optional[np.ndarray] = None,
-                       labels: Optional[np.ndarray] = None,
-                       box: Optional[np.ndarray] = None) -> np.ndarray:
-        """
-        Create a visualization of the predicted masks
-        
-        Args:
-            masks: Array of predicted masks
-            scores: Confidence scores for each mask
-            points: Optional point coordinates
-            labels: Optional point labels
-            box: Optional box coordinates
-            
-        Returns:
-            visualization: RGB image with overlaid masks and prompts
-        """
-        if self.image is None:
-            raise ValueError("No image has been set. Call set_image() first.")
-            
+    def visualize_masks(
+        self,
+        masks: np.ndarray,
+        scores: np.ndarray,
+        points: Optional[np.ndarray] = None,
+        labels: Optional[np.ndarray] = None,
+        box: Optional[np.ndarray] = None
+    ) -> np.ndarray:
+        """Visualize masks with optional points and box."""
+        # Start with original image
         vis_image = self.image.copy()
         
-        # Overlay masks with different colors
-        for mask, score in zip(masks, scores):
-            color = np.concatenate([np.random.random(3), np.array([0.6])], axis=0)
-            mask_image = mask.reshape(mask.shape[0], mask.shape[1], 1) * color.reshape(1, 1, -1)
+        # Create mask overlay
+        mask_image = np.zeros_like(vis_image)
+        
+        # Draw each mask with a different color
+        for i, (mask, score) in enumerate(zip(masks, scores)):
+            color = np.random.random(3) * 255
+            mask_bool = mask.astype(bool)
+            mask_overlay = np.zeros_like(vis_image)
+            mask_overlay[mask_bool] = color
             
-            # Draw contours
-            contours, _ = cv2.findContours(mask.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-            contours = [cv2.approxPolyDP(contour, epsilon=0.01, closed=True) for contour in contours]
-            cv2.drawContours(vis_image, contours, -1, color[:3].tolist(), thickness=2)
+            # Add mask to visualization
+            cv2.addWeighted(vis_image, 1, mask_overlay, 0.5, 0, vis_image)
             
-            # Blend mask
-            vis_image = cv2.addWeighted(vis_image, 1, (mask_image * 255).astype(np.uint8), 0.5, 0)
-            
+            # Add score text
+            score_text = f"Mask {i}: {score:.3f}"
+            cv2.putText(vis_image, score_text,
+                       (10, 30 + i*30), cv2.FONT_HERSHEY_SIMPLEX,
+                       1.0, (255, 255, 255), 2)
+        
         # Draw points if provided
         if points is not None and labels is not None:
             for point, label in zip(points, labels):
-                color = (0, 255, 0) if label == 1 else (255, 0, 0)
-                cv2.drawMarker(vis_image, tuple(point.astype(int)), color, 
-                             markerType=cv2.MARKER_STAR, markerSize=20, thickness=2)
-                
+                color = (0, 255, 0) if label == 1 else (0, 0, 255)
+                cv2.circle(vis_image, tuple(map(int, point)), 5, color, -1)
+                cv2.circle(vis_image, tuple(map(int, point)), 6, (255, 255, 255), 1)
+        
         # Draw box if provided
         if box is not None:
-            cv2.rectangle(vis_image, 
-                         (int(box[0]), int(box[1])), 
-                         (int(box[2]), int(box[3])), 
-                         (0, 255, 0), 2)
-            
+            cv2.rectangle(vis_image,
+                        (int(box[0]), int(box[1])),
+                        (int(box[2]), int(box[3])),
+                        (0, 255, 0), 2)
+        
         return vis_image 

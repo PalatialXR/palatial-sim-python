@@ -6,7 +6,7 @@ import numpy as np
 from PIL import Image
 from typing import List, Dict, Optional
 from openai import OpenAI
-from ..models.physical_properties import ObjectDescription
+from models.physical_properties import ObjectDescription
 
 class DescriptionGenerator:
     def __init__(self, api_key: str):

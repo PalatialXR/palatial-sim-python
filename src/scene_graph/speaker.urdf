@@ -1,0 +1,70 @@
+<?xml version="1.0"?>
+<robot name="krk_speaker">
+ <link name="base_link">
+   <inertial>
+     <mass value="10.3"/>
+     <origin xyz="0 0 0.127" rpy="0 0 0"/>
+     <inertia ixx="0.2" ixy="0.0" ixz="0.0" 
+              iyy="0.18" iyz="0.0" 
+              izz="0.15"/>
+   </inertial>
+
+   <visual>
+     <origin xyz="0 0 0" rpy="0 0 0"/>
+     <geometry>
+       <box size="0.224 0.284 0.262"/>
+     </geometry>
+     <material name="black">
+       <color rgba="0.1 0.1 0.1 1"/>
+     </material>
+   </visual>
+
+   <collision>
+     <origin xyz="0 0 0" rpy="0 0 0"/>
+     <geometry>
+       <box size="0.224 0.284 0.262"/>
+     </geometry>
+     <contact>
+       <lateral_friction value="0.3"/>
+       <rolling_friction value="0.001"/>
+       <restitution value="0.2"/>
+       <stiffness value="20000.0"/>
+       <damping value="100.0"/>
+     </contact>
+   </collision>
+ </link>
+
+ <link name="woofer">
+   <inertial>
+     <mass value="0.5"/>
+     <origin xyz="0 0 0" rpy="0 0 0"/>
+     <inertia ixx="0.001" ixy="0.0" ixz="0.0" 
+              iyy="0.001" iyz="0.0" 
+              izz="0.001"/>
+   </inertial>
+
+   <visual>
+     <origin xyz="0 0 0" rpy="0 0 0"/>
+     <geometry>
+       <cylinder radius="0.0889" length="0.01"/>
+     </geometry>
+     <material name="yellow">
+       <color rgba="0.9 0.9 0 1"/>
+     </material>
+   </visual>
+   
+   <collision>
+     <origin xyz="0 0 0" rpy="0 0 0"/>
+     <geometry>
+       <cylinder radius="0.0889" length="0.01"/>
+     </geometry>
+   </collision>
+ </link>
+
+ <joint name="woofer_joint" type="fixed">
+   <parent link="base_link"/>
+   <child link="woofer"/>
+   <origin xyz="0 0.05 0"/>
+   <dynamics damping="0.5" friction="0.5"/>
+ </joint>
+</robot>

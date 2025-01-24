@@ -1,0 +1,104 @@
+<?xml version="1.0"?>
+<robot name="monitor">
+  <link name="base_link">
+    <inertial>
+      <mass value="2.0"/>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <inertia ixx="0.02" ixy="0.0" ixz="0.0" 
+               iyy="0.02" iyz="0.0" 
+               izz="0.02"/>
+    </inertial>
+    <visual>
+      <geometry>
+        <box size="0.5 0.04 0.3"/>
+      </geometry>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <material name="black">
+        <color rgba="0.1 0.1 0.1 1"/>
+      </material>
+    </visual>
+    <collision>
+      <geometry>
+        <box size="0.5 0.04 0.3"/>
+      </geometry>
+      <contact>
+        <lateral_friction value="1.0"/>
+        <rolling_friction value="0.001"/>
+        <spinning_friction value="0.001"/>
+        <restitution value="0.1"/>
+      </contact>
+    </collision>
+  </link>
+
+  <link name="stand">
+    <inertial>
+      <mass value="0.5"/>
+      <origin xyz="0 0 -0.1" rpy="0 0 0"/>
+      <inertia ixx="0.001" ixy="0.0" ixz="0.0" 
+               iyy="0.001" iyz="0.0" 
+               izz="0.0001"/>
+    </inertial>
+    <visual>
+      <geometry>
+        <cylinder radius="0.02" length="0.2"/>
+      </geometry>
+      <origin xyz="0 0 -0.1" rpy="0 0 0"/>
+      <material name="silver">
+        <color rgba="0.8 0.8 0.8 1"/>
+      </material>
+    </visual>
+    <collision>
+      <geometry>
+        <cylinder radius="0.02" length="0.2"/>
+      </geometry>
+      <origin xyz="0 0 -0.1" rpy="0 0 0"/>
+      <contact>
+        <lateral_friction value="1.0"/>
+        <rolling_friction value="0.001"/>
+        <spinning_friction value="0.001"/>
+        <restitution value="0.1"/>
+      </contact>
+    </collision>
+  </link>
+
+  <link name="base_stand">
+    <inertial>
+      <mass value="1.0"/>
+      <origin xyz="0 0 -0.21" rpy="0 0 0"/>
+      <inertia ixx="0.005" ixy="0.0" ixz="0.0" 
+               iyy="0.005" iyz="0.0" 
+               izz="0.008"/>
+    </inertial>
+    <visual>
+      <geometry>
+        <box size="0.2 0.2 0.02"/>
+      </geometry>
+      <origin xyz="0 0 -0.21" rpy="0 0 0"/>
+      <material name="black"/>
+    </visual>
+    <collision>
+      <geometry>
+        <box size="0.2 0.2 0.02"/>
+      </geometry>
+      <origin xyz="0 0 -0.21" rpy="0 0 0"/>
+      <contact>
+        <lateral_friction value="1.0"/>
+        <rolling_friction value="0.001"/>
+        <spinning_friction value="0.001"/>
+        <restitution value="0.1"/>
+      </contact>
+    </collision>
+  </link>
+
+  <joint name="monitor_to_stand" type="fixed">
+    <parent link="base_link"/>
+    <child link="stand"/>
+    <origin xyz="0 0 0"/>
+  </joint>
+
+  <joint name="stand_to_base" type="fixed">
+    <parent link="stand"/>
+    <child link="base_stand"/>
+    <origin xyz="0 0 0"/>
+  </joint>
+</robot>
