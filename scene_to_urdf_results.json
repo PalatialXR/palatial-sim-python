@@ -1,0 +1,261 @@
+{
+  "success": true,
+  "scene_graph": {
+    "objects": [
+      {
+        "name": "table_0",
+        "category": "furniture",
+        "description": "Wooden desk with light brown finish",
+        "hierarchy": {
+          "level": 0,
+          "parent": null,
+          "children": [
+            "monitor_0",
+            "keyboard_0",
+            "mouse_0",
+            "airpods_case_0",
+            "mouse_pad_0",
+            "computer_case_0",
+            "key_0"
+          ]
+        }
+      },
+      {
+        "name": "monitor_0",
+        "category": "electronic",
+        "description": "Dell monitor with black bezel",
+        "hierarchy": {
+          "level": 1,
+          "parent": "table_0",
+          "children": []
+        }
+      },
+      {
+        "name": "keyboard_0",
+        "category": "electronic",
+        "description": "White Apple keyboard",
+        "hierarchy": {
+          "level": 1,
+          "parent": "table_0",
+          "children": []
+        }
+      },
+      {
+        "name": "mouse_0",
+        "category": "electronic",
+        "description": "Black Razer mouse",
+        "hierarchy": {
+          "level": 1,
+          "parent": "table_0",
+          "children": []
+        }
+      },
+      {
+        "name": "airpods_case_0",
+        "category": "electronic",
+        "description": "White AirPods case",
+        "hierarchy": {
+          "level": 1,
+          "parent": "table_0",
+          "children": []
+        }
+      },
+      {
+        "name": "mouse_pad_0",
+        "category": "furniture",
+        "description": "Light gray mouse pad",
+        "hierarchy": {
+          "level": 1,
+          "parent": "table_0",
+          "children": []
+        }
+      },
+      {
+        "name": "computer_case_0",
+        "category": "electronic",
+        "description": "White computer case with blue lighting",
+        "hierarchy": {
+          "level": 1,
+          "parent": "table_0",
+          "children": []
+        }
+      },
+      {
+        "name": "key_0",
+        "category": "accessory",
+        "description": "Key with keychain",
+        "hierarchy": {
+          "level": 1,
+          "parent": "table_0",
+          "children": []
+        }
+      },
+      {
+        "name": "chair_0",
+        "category": "furniture",
+        "description": "Black rolling office chair",
+        "hierarchy": {
+          "level": 0,
+          "parent": null,
+          "children": []
+        }
+      },
+      {
+        "name": "backpack_0",
+        "category": "fashion",
+        "description": "Gray backpack",
+        "hierarchy": {
+          "level": 0,
+          "parent": null,
+          "children": []
+        }
+      }
+    ],
+    "relationships": [
+      {
+        "source": "monitor_0",
+        "target": "table_0",
+        "relation_type": "on"
+      },
+      {
+        "source": "keyboard_0",
+        "target": "table_0",
+        "relation_type": "on"
+      },
+      {
+        "source": "mouse_0",
+        "target": "table_0",
+        "relation_type": "on"
+      },
+      {
+        "source": "airpods_case_0",
+        "target": "table_0",
+        "relation_type": "on"
+      },
+      {
+        "source": "mouse_pad_0",
+        "target": "table_0",
+        "relation_type": "on"
+      },
+      {
+        "source": "computer_case_0",
+        "target": "table_0",
+        "relation_type": "on"
+      },
+      {
+        "source": "key_0",
+        "target": "table_0",
+        "relation_type": "on"
+      },
+      {
+        "source": "backpack_0",
+        "target": "table_0",
+        "relation_type": "below"
+      },
+      {
+        "source": "monitor_0",
+        "target": "keyboard_0",
+        "relation_type": "behind"
+      },
+      {
+        "source": "keyboard_0",
+        "target": "mouse_0",
+        "relation_type": "left_of"
+      },
+      {
+        "source": "mouse_0",
+        "target": "airpods_case_0",
+        "relation_type": "right_of"
+      },
+      {
+        "source": "computer_case_0",
+        "target": "monitor_0",
+        "relation_type": "right_of"
+      }
+    ]
+  },
+  "downloaded_objects": {
+    "table_0": {
+      "name": "table_0",
+      "description": "Wooden desk with light brown finish",
+      "category": "furniture",
+      "file_path": null,
+      "image_path": null
+    },
+    "monitor_0": {
+      "name": "monitor_0",
+      "description": "Dell monitor with black bezel",
+      "category": "electronic",
+      "file_path": "downloaded_objects/monitor_0_stl/model.stl",
+      "image_path": "downloaded_objects/monitor_0_stl/thumbnail.jpg"
+    },
+    "keyboard_0": {
+      "name": "keyboard_0",
+      "description": "White Apple keyboard",
+      "category": "electronic",
+      "file_path": "downloaded_objects/keyboard_0_stl/model.stl",
+      "image_path": "downloaded_objects/keyboard_0_stl/thumbnail.jpg"
+    },
+    "mouse_0": {
+      "name": "mouse_0",
+      "description": "Black Razer mouse",
+      "category": "electronic",
+      "file_path": "downloaded_objects/mouse_0_stl/model.stl",
+      "image_path": "downloaded_objects/mouse_0_stl/thumbnail.jpg"
+    },
+    "airpods_case_0": {
+      "name": "airpods_case_0",
+      "description": "White AirPods case",
+      "category": "electronic",
+      "file_path": null,
+      "image_path": null
+    },
+    "mouse_pad_0": {
+      "name": "mouse_pad_0",
+      "description": "Light gray mouse pad",
+      "category": "furniture",
+      "file_path": null,
+      "image_path": null
+    },
+    "computer_case_0": {
+      "name": "computer_case_0",
+      "description": "White computer case with blue lighting",
+      "category": "electronic",
+      "file_path": null,
+      "image_path": null
+    },
+    "key_0": {
+      "name": "key_0",
+      "description": "Key with keychain",
+      "category": "accessory",
+      "file_path": null,
+      "image_path": null
+    },
+    "chair_0": {
+      "name": "chair_0",
+      "description": "Black rolling office chair",
+      "category": "furniture",
+      "file_path": null,
+      "image_path": null
+    },
+    "backpack_0": {
+      "name": "backpack_0",
+      "description": "Gray backpack",
+      "category": "fashion",
+      "file_path": "downloaded_objects/backpack_0_stl/model.stl",
+      "image_path": "downloaded_objects/backpack_0_stl/thumbnail.jpg"
+    }
+  },
+  "urdf_files": {
+    "table_0": null,
+    "monitor_0": null,
+    "keyboard_0": null,
+    "mouse_0": null,
+    "airpods_case_0": null,
+    "mouse_pad_0": null,
+    "computer_case_0": null,
+    "key_0": null,
+    "chair_0": null,
+    "backpack_0": null
+  }
+}

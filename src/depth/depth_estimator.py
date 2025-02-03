@@ -1,3 +1,6 @@
+# @TODO: Implement depth estimation using the Depth Anything model, need to download the model as a github submodule and build it first - can set up a fastapi server to serve the model later
+
+
 # import torch
 # import numpy as np
 # from PIL import Image

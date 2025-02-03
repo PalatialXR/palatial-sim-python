@@ -1,16 +1,37 @@
 from dataclasses import dataclass
 from enum import Enum
-from typing import List, Dict, Tuple, Optional
+from typing import List, Dict, Tuple, Optional, Any
 import pybullet as p
 import numpy as np
 import xml.etree.ElementTree as ET
 import os
 
 class SpatialRelation(Enum):
+    # Basic structural relations
     ON = "on"
     NEXT_TO = "next_to"
     ABOVE = "above"
     BELOW = "below"
+    
+    # Complex spatial relations
+    IN_FRONT_OF = "in_front_of"
+    BEHIND = "behind"
+    LEFT_OF = "left_of"
+    RIGHT_OF = "right_of"
+    INSIDE = "inside"
+    BETWEEN = "between"
+    ALIGNED_WITH = "aligned_with"
+
+@dataclass
+class SubLinkage:
+    """Represents a secondary relationship between objects at the same level"""
+    source: str
+    target: str
+    relation: SpatialRelation
+    constraint_params: Dict[str, Any] = None  # Additional parameters for specific constraints
+    
+    def __post_init__(self):
+        self.constraint_params = self.constraint_params or {}
 
 @dataclass
 class SemanticRelation:
