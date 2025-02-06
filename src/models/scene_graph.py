@@ -1,14 +1,46 @@
-
-
 from enum import Enum
-from typing import List, Optional
+from typing import List, Optional, Set, Tuple, Dict
 from pydantic import BaseModel, Field
+import numpy as np
 
 # Update enums to be simple strings for compatibility
 SPATIAL_RELATIONS = [
     "on", "next_to", "above", "below", "in_front_of",
     "behind", "left_of", "right_of", "inside", "between", "aligned_with"
 ]
+
+class ObjectState(BaseModel):
+    """Physical state of an object during scene planning"""
+    name: str
+    bbox: Tuple[float, float, float]
+    position: Optional[Tuple[float, float, float]] = None
+    orientation: Optional[Tuple[float, float, float]] = None
+    children_on: Set[str] = set()
+    parent: Optional[str] = None
+    grid_resolution: Optional[float] = None
+    available_surface: Optional[List[List[bool]]] = None
+    
+    class Config:
+        arbitrary_types_allowed = True
+    
+    def init_grid(self, resolution: float = 0.1):
+        """Initialize placement grid for surface.
+        
+        Args:
+            resolution: Grid cell size in meters (default: 0.1m or 10cm)
+        """
+        self.grid_resolution = resolution
+        
+        # Calculate grid size based on the larger dimension with some padding
+        padding_factor = 1.2  # Add 20% padding for better placement options
+        max_dim = max(self.bbox[0], self.bbox[1]) * padding_factor
+        grid_size = max(
+            int(max_dim / resolution),
+            10  # Minimum grid size of 10x10
+        )
+        
+        # Create grid with all cells initially available
+        self.available_surface = [[True] * grid_size for _ in range(grid_size)]
 
 class SpatialProperties(BaseModel):
     """Spatial properties of an object in the scene"""
@@ -37,10 +69,17 @@ class SpatialRelation(BaseModel):
     distance: Optional[float] = Field(None, description="Distance in meters")
     contact_area: Optional[float] = Field(None, description="Contact area in m²")
 
+class SemanticRelation(BaseModel):
+    """Semantic relationship between objects with confidence score"""
+    source: str = Field(..., description="Source object name")
+    relation: str = Field(..., description="Type of spatial relationship")
+    target: str = Field(..., description="Target object name")
+    confidence: float = Field(..., ge=0.0, le=1.0, description="Confidence score of the relationship")
+
 class SceneObject(BaseModel):
     """Object in the scene"""
     name: str = Field(..., description="Unique object identifier")
-    category: str = Field(..., description="Object LVIS/COCO category")
+    category: str = Field(..., description="Object Sapien Partnet Mobility Dataset category")
     description: str = Field(..., description="Detailed Object description")
     spatial: Optional[SpatialProperties] = Field(None, description="Spatial properties")
     hierarchy: HierarchicalProperties = Field(..., description="Hierarchical relationships")

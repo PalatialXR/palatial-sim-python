@@ -167,19 +167,66 @@ def generate_urdf(
         # Handle both Scene and Trimesh objects
         if isinstance(loaded_mesh, trimesh.Scene):
             logger.info(f"Loaded Scene object for {object_name}, extracting geometry...")
-            # Get all geometry from the scene
-            geometry = list(loaded_mesh.geometry.values())
+            
+            # Debug scene contents
+            logger.info(f"Scene contents for {object_name}:")
+            logger.info(f"- Graph keys: {list(loaded_mesh.graph.keys())}")
+            logger.info(f"- Geometry keys: {list(loaded_mesh.geometry.keys())}")
+            
+            # Try multiple methods to extract geometry
+            geometry = []
+            
+            # Method 1: Direct geometry values
+            if loaded_mesh.geometry:
+                geometry = list(loaded_mesh.geometry.values())
+                logger.info(f"Found {len(geometry)} geometries using direct extraction")
+            
+            # Method 2: Try to dump the scene to a single mesh
             if not geometry:
-                logger.error(f"No geometry found in Scene for {object_name}")
+                try:
+                    logger.info("Attempting to export scene to single mesh...")
+                    temp_mesh = loaded_mesh.dump(concatenate=True)
+                    if isinstance(temp_mesh, trimesh.Trimesh):
+                        geometry = [temp_mesh]
+                        logger.info("Successfully exported scene to single mesh")
+                    else:
+                        logger.warning(f"Scene dump returned unexpected type: {type(temp_mesh)}")
+                except Exception as e:
+                    logger.warning(f"Failed to export scene to single mesh: {e}")
+            
+            # Method 3: Try to get geometry from graph
+            if not geometry:
+                try:
+                    logger.info("Attempting to extract geometry from scene graph...")
+                    for node_name in loaded_mesh.graph.nodes:
+                        if 'geometry' in loaded_mesh.graph.nodes[node_name]:
+                            geom = loaded_mesh.graph.nodes[node_name]['geometry']
+                            if isinstance(geom, trimesh.Trimesh):
+                                geometry.append(geom)
+                    if geometry:
+                        logger.info(f"Found {len(geometry)} geometries in scene graph")
+                except Exception as e:
+                    logger.warning(f"Failed to extract geometry from scene graph: {e}")
+            
+            if not geometry:
+                logger.error(f"No geometry found in Scene for {object_name} after trying multiple extraction methods")
+                return None
+            
+            # Combine all meshes in the scene
+            try:
+                logger.info(f"Attempting to concatenate {len(geometry)} geometries...")
+                mesh = trimesh.util.concatenate(geometry)
+                if not isinstance(mesh, trimesh.Trimesh):
+                    logger.error(f"Failed to combine scene geometry for {object_name}: result is {type(mesh)}")
+                    return None
+                logger.info("Successfully concatenated geometries")
+            except Exception as e:
+                logger.error(f"Error concatenating geometries: {e}")
                 return None
                 
-            # Combine all meshes in the scene
-            mesh = trimesh.util.concatenate(geometry)
-            if not isinstance(mesh, trimesh.Trimesh):
-                logger.error(f"Failed to combine scene geometry for {object_name}")
-                return None
         elif isinstance(loaded_mesh, trimesh.Trimesh):
             mesh = loaded_mesh
+            logger.info("Loaded direct Trimesh object")
         else:
             logger.error(f"Unsupported mesh type for {object_name}: {type(loaded_mesh)}")
             return None

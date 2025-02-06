@@ -3,7 +3,14 @@ from typing import Optional, Dict, Any, List
 from pathlib import Path
 import base64
 import mimetypes
-from models.scene_graph import SceneGraph, SpatialRelation
+from src.models.scene_graph import (
+    SceneGraph,
+    SpatialRelation,
+    SemanticRelation,
+    SceneObject,
+    HierarchicalProperties,
+    SPATIAL_RELATIONS
+)
 
 def _encode_image(image_path: str) -> Dict[str, str]:
     """Helper function to encode image and determine mime type"""
@@ -22,14 +29,18 @@ def _encode_image(image_path: str) -> Dict[str, str]:
 
 def analyze_scene_image(image_paths: List[str], prompt: Optional[str] = None) -> Dict[str, Any]:
     """
-    Analyzes a scene image using OpenAI's GPT-4o Structured Outputs to extract scene information.
+    Analyzes a scene image using OpenAI's GPT-4 Vision to extract scene information.
     
     Args:
         image_paths: List of paths to the image files to analyze
         prompt: Optional custom prompt to use. If None, uses default prompt.
         
     Returns:
-        Dict containing the model's response and structured scene analysis
+        Dict containing:
+            success: bool indicating if analysis was successful
+            structured_analysis: SceneGraph object with scene structure
+            response: Raw API response
+            error: Error message if success is False
     """
     # Validate image paths
     for image_path in image_paths:
@@ -41,13 +52,33 @@ def analyze_scene_image(image_paths: List[str], prompt: Optional[str] = None) ->
     
     # Prepare default prompt if none provided
     if prompt is None:
-        prompt = ("Analyze this scene which contains multiple objects, and different images are more focused on different orientations of the scene, and provide a structured description of:\n"
-                 "If there are multiple similar objects, name them as '<object_name>_<index>', and include their relationships. Make sure to include the LVIS/COCO based category, and detailed descriptions, including make, model, color, texture, and other properties of each of the objects in the scene.\n"
-                 "1. Spatial relationships between ALL objects using the following relations: on, next_to, above, below, in_front_of, behind, left_of, right_of, inside, between, aligned_with. TWO TYPES OF RELATIONSHIPS SHOULD BE PRESENT: a) Parent-child relationships (e.g., objects on the desk) b) Peer relationships between objects at the same level\n"
-                 "2. Hierarchical structure showing which objects support others\n"
-                 "Format the output to match the following structure:\n"
-                 "- List of ObjectNode entries with name, parent, children\n"
-                 "- List of SubLinkage entries showing relationships between objects")
+        valid_categories = [
+            "Bottle", "Box", "Bucket", "Cart", "Chair", "Clock", 
+            "CoffeeMachine", "Dishwasher", "Dispenser", "Display/Monitor`", "Door", 
+            "Eyeglasses", "Fan", "Faucet", "FoldingChair", "Globe", "Kettle", 
+            "Keyboard", "KitchenPot", "Knife", "Lamp", "Laptop", "Lighter", 
+            "Microwave", "Mouse", "Oven", "Pen", "Phone", "Pliers", "Printer", 
+            "Refrigerator", "Remote", "Safe", "Scissors", "Stapler", 
+            "StorageFurniture", "Suitcase", "Switch", "Table", "Toaster", 
+            "Toilet", "TrashCan", "USB", "WashingMachine", "Window"
+        ]
+        
+        prompt = (
+            "Analyze this scene which contains multiple objects, and different images are more focused on different orientations of the scene. "
+            "IMPORTANT: Only identify and describe objects that EXACTLY match one of these categories (case-sensitive):\n"
+            f"{', '.join(valid_categories)}\n\n"
+            "If an object doesn't match any of these categories exactly, DO NOT include it in the output at all, and don't mention it as a relationship with another object, "
+            "and DO NOT create any relationships involving that object.\n\n"
+            "For objects that DO match the valid categories:\n"
+            "1. Name similar objects as '<object_name>_<index>'\n"
+            "2. Include the exact category name from the list above\n"
+            "3. Provide detailed descriptions including make, model, color, texture, and other properties\n"
+            f"4. Define spatial relationships using ONLY these relations: {', '.join(SPATIAL_RELATIONS)}\n"
+            "   Include TWO TYPES OF RELATIONSHIPS:\n"
+            "   a) Parent-child relationships (e.g., objects on the table)\n"
+            "   b) Peer relationships between objects at the same level\n"
+            "5. Show hierarchical structure of which objects support others\n\n"
+        )
 
     # Encode all images
     encoded_images = [_encode_image(path) for path in image_paths]
@@ -56,7 +87,6 @@ def analyze_scene_image(image_paths: List[str], prompt: Optional[str] = None) ->
     message_content = [{"type": "text", "text": prompt}]
     message_content.extend(encoded_images)
 
-    # Prepare the API request
     try:
         response = client.beta.chat.completions.parse(
             model="gpt-4o-2024-08-06",
@@ -73,11 +103,14 @@ def analyze_scene_image(image_paths: List[str], prompt: Optional[str] = None) ->
             response_format=SceneGraph
         )
 
-        print(response)
+        # Convert semantic relations to spatial relations if needed
+        scene_graph = response.choices[0].message.parsed
+        if not isinstance(scene_graph, SceneGraph):
+            raise ValueError("API response did not match SceneGraph format")
 
         return {
             "success": True,
-            "structured_analysis": response.choices[0].message.parsed,
+            "structured_analysis": scene_graph,
             "response": response
         }
         

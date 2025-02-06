@@ -1,0 +1,164 @@
+[
+  {
+    "scene_object": {
+      "name": "Table_1",
+      "category": "Table",
+      "description": "Wooden table with metal legs",
+      "spatial": {
+        "position_x": null,
+        "position_y": null,
+        "position_z": 0.0,
+        "orientation_roll": null,
+        "orientation_pitch": null,
+        "orientation_yaw": null,
+        "width": 1.2,
+        "length": 0.6,
+        "height": 0.75
+      },
+      "hierarchy": {
+        "level": 0,
+        "is_anchor": true,
+        "parent": null,
+        "children": [
+          "Display_1",
+          "Keyboard_1",
+          "Mouse_1"
+        ]
+      }
+    },
+    "urdf_path": "src/datasets/partnet-mobility-v0/dataset/25913/mobility.urdf",
+    "category": "Table",
+    "object_id": "25913",
+    "similarity_score": 1.0,
+    "match_description": "Exact category match",
+    "position": [
+      0.0,
+      0.0,
+      0.291737775
+    ]
+  },
+  {
+    "scene_object": {
+      "name": "Display_1",
+      "category": "Display/Monitor",
+      "description": "Dell monitor on wooden table",
+      "spatial": {
+        "position_x": null,
+        "position_y": null,
+        "position_z": null,
+        "orientation_roll": null,
+        "orientation_pitch": null,
+        "orientation_yaw": null,
+        "width": 0.5,
+        "length": 0.3,
+        "height": 0.4
+      },
+      "hierarchy": {
+        "level": 1,
+        "is_anchor": false,
+        "parent": "Table_1",
+        "children": []
+      }
+    },
+    "urdf_path": "src/datasets/partnet-mobility-v0/dataset/4586/mobility.urdf",
+    "category": "Display",
+    "object_id": "4586",
+    "similarity_score": 0.5,
+    "match_description": "Fuzzy matched 'Display/Monitor' to 'Display'",
+    "position": null
+  },
+  {
+    "scene_object": {
+      "name": "Keyboard_1",
+      "category": "Keyboard",
+      "description": "White keyboard on wooden table",
+      "spatial": {
+        "position_x": null,
+        "position_y": null,
+        "position_z": null,
+        "orientation_roll": null,
+        "orientation_pitch": null,
+        "orientation_yaw": null,
+        "width": 0.4,
+        "length": 0.15,
+        "height": 0.03
+      },
+      "hierarchy": {
+        "level": 1,
+        "is_anchor": false,
+        "parent": "Table_1",
+        "children": []
+      }
+    },
+    "urdf_path": "src/datasets/partnet-mobility-v0/dataset/12968/mobility.urdf",
+    "category": "Keyboard",
+    "object_id": "12968",
+    "similarity_score": 1.0,
+    "match_description": "Exact category match",
+    "position": null
+  },
+  {
+    "scene_object": {
+      "name": "Mouse_1",
+      "category": "Mouse",
+      "description": "Black gaming mouse on mouse pad",
+      "spatial": {
+        "position_x": null,
+        "position_y": null,
+        "position_z": null,
+        "orientation_roll": null,
+        "orientation_pitch": null,
+        "orientation_yaw": null,
+        "width": 0.1,
+        "length": 0.05,
+        "height": 0.04
+      },
+      "hierarchy": {
+        "level": 1,
+        "is_anchor": false,
+        "parent": "Table_1",
+        "children": []
+      }
+    },
+    "urdf_path": "src/datasets/partnet-mobility-v0/dataset/101416/mobility.urdf",
+    "category": "Mouse",
+    "object_id": "101416",
+    "similarity_score": 1.0,
+    "match_description": "Exact category match",
+    "position": null
+  },
+  {
+    "scene_object": {
+      "name": "Display_2",
+      "category": "Display/Monitor",
+      "description": "Dell monitor on wooden table",
+      "spatial": {
+        "position_x": null,
+        "position_y": null,
+        "position_z": null,
+        "orientation_roll": null,
+        "orientation_pitch": null,
+        "orientation_yaw": null,
+        "width": 0.5,
+        "length": 0.3,
+        "height": 0.4
+      },
+      "hierarchy": {
+        "level": 1,
+        "is_anchor": false,
+        "parent": "Table_1",
+        "children": []
+      }
+    },
+    "urdf_path": "src/datasets/partnet-mobility-v0/dataset/5452/mobility.urdf",
+    "category": "Display",
+    "object_id": "5452",
+    "similarity_score": 0.5,
+    "match_description": "Fuzzy matched 'Display/Monitor' to 'Display'",
+    "position": [
+      -0.38289412871846273,
+      -0.5162976820379586,
+      0.9655068795839193
+    ]
+  }
+]

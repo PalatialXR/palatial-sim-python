@@ -1,5 +1,5 @@
 import os
-from typing import List, Dict, Any, Set, Tuple
+from typing import List, Dict, Any, Set, Tuple, Optional
 import pandas as pd
 import logging
 import traceback
@@ -18,6 +18,8 @@ import io
 import shutil
 import tempfile
 import json
+import multiprocessing
+from utils.category_manager import CategoryManager
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -63,9 +65,16 @@ class ObjectViewer:
         self.load_current_object()
     
     def setup_widgets(self):
-        # Info label
-        self.info_label = ttk.Label(self.info_frame, text="", wraplength=1000)
-        self.info_label.pack(fill=tk.X)
+        # Info label with scrollbar
+        info_frame = ttk.Frame(self.info_frame)
+        info_frame.pack(fill=tk.BOTH, expand=True)
+        
+        scrollbar = ttk.Scrollbar(info_frame)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        
+        self.info_label = tk.Text(info_frame, wrap=tk.WORD, height=10, yscrollcommand=scrollbar.set)
+        self.info_label.pack(fill=tk.BOTH, expand=True)
+        scrollbar.config(command=self.info_label.yview)
         
         # Navigation buttons
         ttk.Button(self.button_frame, text="Previous", command=self.prev_object).pack(side=tk.LEFT, padx=5)
@@ -76,11 +85,41 @@ class ObjectViewer:
     def load_current_object(self):
         uid, obj_data, temp_path = self.matches[self.current_index]
         
-        # Update info
-        info_text = f"Match {self.current_index + 1}/{len(self.matches)}\n"
-        info_text += f"Name: {obj_data.get('name', 'No name')}\n"
-        info_text += f"Category: {obj_data.get('category', 'Unknown')}\n"
-        info_text += f"Description: {obj_data.get('description', 'No description')}"
+        # Update info with detailed metadata
+        info_text = f"Match {self.current_index + 1}/{len(self.matches)}\n\n"
+        
+        # Basic information
+        info_text += "Basic Information:\n"
+        info_text += f"- Name: {obj_data.get('name', 'No name')}\n"
+        info_text += f"- Category: {obj_data.get('category', 'Unknown')}\n"
+        info_text += f"- Description: {obj_data.get('description', 'No description')}\n\n"
+        
+        # Mesh information if available
+        if 'vertex_count' in obj_data:
+            info_text += "Mesh Details:\n"
+            info_text += f"- Vertices: {obj_data['vertex_count']:,}\n"
+            info_text += f"- Faces: {obj_data['face_count']:,}\n"
+            if 'volume' in obj_data:
+                info_text += f"- Volume: {obj_data['volume']:.2f}\n"
+            if 'bounding_box' in obj_data:
+                dims = obj_data['bounding_box']
+                info_text += f"- Dimensions (xyz): {dims[0]:.2f} x {dims[1]:.2f} x {dims[2]:.2f}\n\n"
+        
+        # Source information
+        info_text += "Source Information:\n"
+        info_text += f"- UID: {uid}\n"
+        if 'mesh_url' in obj_data:
+            info_text += f"- Mesh URL: {obj_data['mesh_url']}\n"
+        if 'thumbnail_url' in obj_data:
+            info_text += f"- Thumbnail URL: {obj_data['thumbnail_url']}\n"
+        
+        # Additional metadata if available
+        if 'metadata' in obj_data:
+            info_text += "\nAdditional Metadata:\n"
+            for key, value in obj_data['metadata'].items():
+                if isinstance(value, (str, int, float, bool)):
+                    info_text += f"- {key}: {value}\n"
+        
         self.info_label.config(text=info_text)
         
         # Try to load and display thumbnail
@@ -144,6 +183,7 @@ class ObjectViewer:
 
 class ObjaverseDownloader:
     def __init__(self, cache_dir: str = ".cache/embeddings"):
+        """Initialize the ObjaverseDownloader."""
         self.cache_dir = Path(cache_dir)
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self.categories_cache_file = self.cache_dir / "lvis_categories.json"
@@ -202,21 +242,38 @@ class ObjaverseDownloader:
         # Load annotations for the category
         annotations = objaverse.load_annotations(uids)
         
+        # Randomly sample from uids to get more variety
+        if len(uids) > 20:
+            uids = np.random.choice(uids, 20, replace=False).tolist()
+        
         # Download and process each object
-        for uid in uids[:10]:  # Limit to top 10 per category
+        for uid in uids:
             obj_data = annotations.get(uid)
             if not obj_data:
                 continue
-                
-            # Check for thumbnail images and STL file
+            
+            # Get full metadata for better information
+            full_metadata = objaverse.get_metadata([uid])[uid]
+            if full_metadata:
+                obj_data.update(full_metadata)
+            
+            # Check for required files
+            has_mesh = 'mesh' in obj_data
             has_images = (
                 'thumbnails' in obj_data 
                 and 'images' in obj_data['thumbnails'] 
                 and len(obj_data['thumbnails']['images']) > 0
             )
             
-            if has_images:
+            if has_mesh and has_images:
                 try:
+                    # Verify mesh URL is accessible
+                    mesh_url = obj_data['mesh']
+                    mesh_response = requests.head(mesh_url)
+                    if mesh_response.status_code != 200:
+                        logger.warning(f"Mesh URL not accessible for {uid}")
+                        continue
+                    
                     # Download the object
                     downloaded_paths = objaverse.load_objects(
                         uids=[uid],
@@ -224,6 +281,19 @@ class ObjaverseDownloader:
                     )
                     
                     if downloaded_paths and uid in downloaded_paths:
+                        # Validate downloaded mesh
+                        try:
+                            mesh = trimesh.load(downloaded_paths[uid])
+                            if not isinstance(mesh, (trimesh.Trimesh, trimesh.Scene)):
+                                logger.warning(f"Invalid mesh format for {uid}")
+                                continue
+                            if isinstance(mesh, trimesh.Trimesh) and (len(mesh.vertices) < 3 or len(mesh.faces) < 1):
+                                logger.warning(f"Mesh has no geometry for {uid}")
+                                continue
+                        except Exception as e:
+                            logger.warning(f"Failed to validate mesh for {uid}: {e}")
+                            continue
+                        
                         # Save 3D model
                         temp_path = os.path.join(temp_dir, f"{uid}.stl")
                         shutil.move(downloaded_paths[uid], temp_path)
@@ -241,8 +311,16 @@ class ObjaverseDownloader:
                             except Exception as e:
                                 logger.error(f"Error downloading thumbnail for {uid}: {e}")
                         
+                        # Add additional metadata for display
                         obj_data['category'] = category
                         obj_data['thumbnail_url'] = thumbnail_url
+                        obj_data['mesh_url'] = mesh_url
+                        if isinstance(mesh, trimesh.Trimesh):
+                            obj_data['vertex_count'] = len(mesh.vertices)
+                            obj_data['face_count'] = len(mesh.faces)
+                            obj_data['volume'] = mesh.volume
+                            obj_data['bounding_box'] = mesh.bounding_box.extents.tolist()
+                        
                         preview_objects.append((uid, obj_data, temp_path))
                         
                 except Exception as e:
@@ -255,162 +333,316 @@ class ObjaverseDownloader:
         try:
             if not self.validate_object_name(object_name):
                 return []
-
+                
             logger.info(f"\nSearching for matches for object: {object_name}")
-            logger.info(f"Category: {object_description.get('category', 'Unknown')}")
+            logger.info(f"Description: {object_description}")
             
             # Create temporary directory for preview objects
             temp_dir = tempfile.mkdtemp()
             
             # Get LVIS annotations
-            lvis_annotations = self.get_lvis_annotations()
+            lvis_annotations = objaverse.load_lvis_annotations()
             
-            all_preview_objects = []
+            # Direct category mapping for common objects
+            direct_lvis_mapping = {
+                'desk': ['desk', 'table', 'office_desk'],
+                'table': ['table', 'desk', 'coffee_table', 'dining_table'],
+                'chair': ['chair', 'office_chair', 'armchair'],
+                'monitor': ['monitor', 'computer_monitor', 'display'],
+                'keyboard': ['keyboard', 'computer_keyboard'],
+                'mouse': ['mouse', 'computer_mouse'],
+                'computer': ['computer', 'desktop_computer', 'laptop'],
+                'backpack': ['backpack', 'bag'],
+                'case': ['case', 'container', 'box']
+            }
             
-            # First try exact category match if provided
-            if object_description.get('category'):
-                category = object_description['category']
-                if category in lvis_annotations:
-                    logger.info(f"Found exact LVIS category match: {category}")
-                    category_uids = lvis_annotations[category]
-                    if category_uids:
-                        preview_objects = self.download_preview_objects(category, category_uids, temp_dir)
-                        all_preview_objects.extend(preview_objects)
+            # Get base object name without number suffix
+            base_name = self.strip_number_suffix(object_name)
             
-            # If no matches found with exact category or no category provided, fall back to name-based search
-            if not all_preview_objects:
-                logger.info("No matches found with exact category, falling back to name search...")
-                search_name = self.strip_number_suffix(object_name)
-                
-                # Prepare search terms
-                search_terms = search_name.lower().split()
-                for term in search_terms.copy():
-                    if term.endswith('s'):
-                        search_terms.append(term[:-1])
-                    else:
-                        search_terms.append(term + 's')
-                
-                # Find matching categories
-                matching_categories = []
-                for category in lvis_annotations.keys():
-                    category_lower = category.lower().replace('_', ' ')
-                    if any(term in category_lower for term in search_terms):
-                        matching_categories.append(category)
-                
-                # Process matching categories
-                for category in matching_categories:
-                    if len(all_preview_objects) >= 10:
-                        break
-                        
-                    category_uids = lvis_annotations[category]
-                    if category_uids:
-                        preview_objects = self.download_preview_objects(
-                            category, 
-                            category_uids, 
-                            temp_dir
-                        )
-                        all_preview_objects.extend(preview_objects)
+            # Try direct category match first
+            candidate_uids = []
             
-            if not all_preview_objects:
-                logger.warning(f"No matching objects found for {object_name}")
-                shutil.rmtree(temp_dir)
+            # Check direct mapping first
+            if base_name in direct_lvis_mapping:
+                for category in direct_lvis_mapping[base_name]:
+                    if category in lvis_annotations:
+                        candidate_uids.extend(lvis_annotations[category])
+                        logger.info(f"Found matches in LVIS category: {category}")
+            
+            # If no direct matches, try the category field
+            if not candidate_uids and 'category' in object_description:
+                category = object_description['category'].lower()
+                if category in direct_lvis_mapping:
+                    for mapped_category in direct_lvis_mapping[category]:
+                        if mapped_category in lvis_annotations:
+                            candidate_uids.extend(lvis_annotations[mapped_category])
+                            logger.info(f"Found matches in category: {mapped_category}")
+                elif category in lvis_annotations:
+                    candidate_uids.extend(lvis_annotations[category])
+                    logger.info(f"Found matches in category: {category}")
+            
+            if not candidate_uids:
+                logger.warning(f"No category matches found for {object_name}")
                 return []
             
-            return all_preview_objects[:10]
+            logger.info(f"Found {len(candidate_uids)} initial candidates")
             
+            # Get annotations for all candidates
+            annotations = objaverse.load_annotations(candidate_uids)
+            
+            # Filter and analyze candidates
+            analyzed_candidates = []
+            for uid in candidate_uids:
+                try:
+                    # Load object metadata and mesh
+                    obj_data = self._load_and_analyze_object(uid, annotations.get(uid, {}))
+                    if obj_data:
+                        # Score the match based on properties
+                        match_score = self.category_manager.score_object_match(
+                            obj_data, 
+                            object_description.get('properties', {})
+                        )
+                        analyzed_candidates.append((uid, obj_data, match_score))
+                except Exception as e:
+                    logger.warning(f"Error processing candidate {uid}: {e}")
+            
+            if not analyzed_candidates:
+                logger.warning("No valid candidates found after analysis")
+                return []
+                
+            # Sort by match score
+            analyzed_candidates.sort(key=lambda x: x[2], reverse=True)
+            logger.info(f"Found {len(analyzed_candidates)} valid candidates after analysis")
+            
+            # Take top candidates for preview
+            top_candidates = analyzed_candidates[:20]
+            
+            # Download and prepare preview objects
+            preview_objects = []
+            for uid, obj_data, score in top_candidates:
+                try:
+                    # Download the object
+                    downloaded_paths = objaverse.load_objects([uid])
+                    
+                    if not downloaded_paths or uid not in downloaded_paths:
+                        continue
+                        
+                    mesh_path = downloaded_paths[uid]
+                    
+                    # Copy to temp directory
+                    temp_path = os.path.join(temp_dir, f"{uid}.glb")
+                    shutil.copy2(mesh_path, temp_path)
+                    
+                    # Get thumbnail
+                    if 'thumbnails' in obj_data and 'images' in obj_data['thumbnails']:
+                        thumbnail_url = obj_data['thumbnails']['images'][0]['url']
+                        try:
+                            response = requests.get(thumbnail_url)
+                            if response.status_code == 200:
+                                thumb_path = os.path.join(temp_dir, f"{uid}_thumb.jpg")
+                                with open(thumb_path, 'wb') as f:
+                                    f.write(response.content)
+                                obj_data['local_thumbnail'] = thumb_path
+                        except Exception as e:
+                            logger.warning(f"Failed to download thumbnail for {uid}: {e}")
+                    
+                    # Add match score to metadata
+                    obj_data['match_score'] = score
+                    preview_objects.append((uid, obj_data, temp_path))
+                    
+                except Exception as e:
+                    logger.warning(f"Failed to prepare preview for {uid}: {e}")
+                    continue
+            
+            if preview_objects:
+                logger.info(f"Prepared {len(preview_objects)} objects for preview")
+                return preview_objects
+            else:
+                logger.warning("No preview objects could be prepared")
+                return []
+                
         except Exception as e:
-            logger.error(f"Error finding matches for {object_name}: {str(e)}")
+            logger.error(f"Error in find_matches: {str(e)}")
             logger.error(f"Traceback: {traceback.format_exc()}")
             if 'temp_dir' in locals():
                 shutil.rmtree(temp_dir)
             return []
 
-    def process_objects(self, objects_dict: Dict[str, Dict[str, Any]], download_dir: str = "downloaded_objects") -> Dict[str, Any]:
-        """Process objects with user selection"""
-        results = {}
-        
+    def _check_available_formats(self, uid: str) -> Dict[str, str]:
+        """Check which formats are available for a given object."""
         try:
-            logger.info(f"\nProcessing {len(objects_dict)} objects...")
-            logger.info(f"Download directory: {download_dir}")
+            # Get object metadata using standard Objaverse
+            metadata = objaverse.get_metadata([uid])[uid]
+            if not metadata:
+                logger.warning(f"No metadata found for object {uid}")
+                return {}
+                
+            available_formats = {}
             
-            for obj_name, obj_desc in objects_dict.items():
-                logger.info(f"\n{'='*50}")
-                logger.info(f"Processing object: {obj_name}")
-                
-                # Find and download preview matches
-                matches = self.find_matches(obj_name, obj_desc)
-                
-                if not matches:
-                    logger.warning(f"No matches found for {obj_name}, skipping")
-                    results[obj_name] = {
-                        "name": obj_name,
-                        "description": obj_desc.get("description", ""),
-                        "category": obj_desc.get("category", ""),
-                        "file_path": None,
-                        "image_path": None
-                    }
-                    continue
-                
-                # Show GUI for selection
-                viewer = ObjectViewer(matches, obj_name)
-                selected_match = viewer.run()
-                
-                # Clean up temporary files
-                temp_dir = os.path.dirname(matches[0][2])
-                
-                if not selected_match:
-                    logger.warning(f"No selection made for {obj_name}, skipping")
-                    shutil.rmtree(temp_dir)
-                    results[obj_name] = {
-                        "name": obj_name,
-                        "description": obj_desc.get("description", ""),
-                        "category": obj_desc.get("category", ""),
-                        "file_path": None,
-                        "image_path": None
-                    }
-                    continue
-                
-                uid, obj_data, temp_path = selected_match
-                
-                # Create object directory
-                object_dir = os.path.join(download_dir, f"{obj_name}_stl")
-                os.makedirs(object_dir, exist_ok=True)
-                
-                # Move 3D model to final location
-                model_path = os.path.join(object_dir, "model.stl")
-                shutil.copy2(temp_path, model_path)
-                
-                # Move thumbnail if it exists
-                image_path = None
-                if 'local_thumbnail' in obj_data and os.path.exists(obj_data['local_thumbnail']):
-                    image_path = os.path.join(object_dir, "thumbnail.jpg")
-                    shutil.copy2(obj_data['local_thumbnail'], image_path)
-                
-                # Clean up temp directory
-                shutil.rmtree(temp_dir)
-                
-                results[obj_name] = {
-                    "name": obj_name,
-                    "description": obj_desc.get("description", ""),
-                    "category": obj_desc.get("category", ""),
-                    "file_path": model_path,
-                    "image_path": image_path
-                }
-                logger.info(f"Successfully processed {obj_name}")
-            
-            logger.info("\nProcessing completed!")
-            logger.info(f"Successfully downloaded: {sum(1 for r in results.values() if r['file_path'] is not None)}/{len(objects_dict)} objects")
-            return results
+            # Check for mesh formats
+            if 'mesh' in metadata:
+                mesh_url = metadata['mesh']
+                if mesh_url and isinstance(mesh_url, str):
+                    format_type = mesh_url.split('.')[-1].lower()
+                    if format_type in ['stl', 'obj', 'glb', 'gltf']:
+                        available_formats[format_type] = mesh_url
+                        
+            # Check for thumbnail
+            if 'thumbnails' in metadata and metadata['thumbnails']:
+                if isinstance(metadata['thumbnails'], list) and metadata['thumbnails']:
+                    available_formats['thumbnail'] = metadata['thumbnails'][0]
+                elif isinstance(metadata['thumbnails'], str):
+                    available_formats['thumbnail'] = metadata['thumbnails']
+                    
+            logger.info(f"Available formats for {uid}: {list(available_formats.keys())}")
+            return available_formats
             
         except Exception as e:
-            logger.error(f"Error processing objects: {str(e)}")
-            logger.error(f"Traceback: {traceback.format_exc()}")
-            return {
-                obj_name: {
-                    "name": obj_name,
-                    "description": obj_desc.get("description", ""),
-                    "category": obj_desc.get("category", ""),
+            logger.error(f"Error checking formats for {uid}: {e}")
+            return {}
+
+    def _download_file(self, url: str, save_path: str) -> bool:
+        """Download a file from a URL.
+        
+        Args:
+            url: URL to download from
+            save_path: Path to save the file to
+            
+        Returns:
+            bool: Whether the download was successful
+        """
+        try:
+            response = requests.get(url, stream=True)
+            response.raise_for_status()
+            
+            # Check if response is empty
+            content_length = int(response.headers.get('content-length', 0))
+            if content_length < 100:  # Less than 100 bytes is suspicious
+                logger.warning(f"File at {url} is too small ({content_length} bytes)")
+                return False
+                
+            # Save the file
+            with open(save_path, 'wb') as f:
+                for chunk in response.iter_content(chunk_size=8192):
+                    f.write(chunk)
+                    
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error downloading {url}: {e}")
+            return False
+
+    def process_objects(self, objects_dict: Dict[str, Dict[str, str]], download_dir: str) -> Dict[str, Dict[str, Any]]:
+        """Process and download objects from Objaverse.
+        
+        Args:
+            objects_dict: Dictionary of objects with their descriptions and categories
+            download_dir: Directory to save downloaded files
+            
+        Returns:
+            Dictionary containing download results for each object
+        """
+        results = {}
+        
+        for obj_name, obj_info in objects_dict.items():
+            logger.info(f"\nProcessing {obj_name}...")
+            
+            # Find matches using LVIS categories and preview selection
+            matches = self.find_matches(obj_name, obj_info)
+            
+            if not matches:
+                logger.warning(f"No matches found for {obj_name}")
+                results[obj_name] = {
+                    "success": False,
                     "file_path": None,
-                    "image_path": None
-                } for obj_name, obj_desc in objects_dict.items()
-            } 
+                    "error": "No matches found"
+                }
+                continue
+            
+            # Show preview and get user selection
+            viewer = ObjectViewer(matches, obj_name)
+            selected_match = viewer.run()
+            
+            if not selected_match:
+                logger.warning(f"No selection made for {obj_name}")
+                results[obj_name] = {
+                    "success": False,
+                    "file_path": None,
+                    "error": "No selection made"
+                }
+                continue
+            
+            # Process selected match
+            uid, obj_data, temp_path = selected_match
+            
+            # Create object directory
+            obj_dir = os.path.join(download_dir, f"{obj_name}_stl")
+            os.makedirs(obj_dir, exist_ok=True)
+            
+            # Move files to final location
+            final_mesh_path = os.path.join(obj_dir, "model.stl")
+            shutil.copy2(temp_path, final_mesh_path)
+            
+            # Copy thumbnail if available
+            thumbnail_path = None
+            if 'local_thumbnail' in obj_data and os.path.exists(obj_data['local_thumbnail']):
+                thumbnail_path = os.path.join(obj_dir, "thumbnail.jpg")
+                shutil.copy2(obj_data['local_thumbnail'], thumbnail_path)
+            
+            results[obj_name] = {
+                "success": True,
+                "file_path": final_mesh_path,
+                "thumbnail_path": thumbnail_path,
+                "uid": uid,
+                "category": obj_data.get('category', '')
+            }
+            
+            logger.info(f"Successfully processed {obj_name}")
+            
+        return results 
+
+    def _load_and_analyze_object(self, uid: str, annotation: Dict) -> Optional[Dict]:
+        """Load an object and analyze its properties."""
+        try:
+            # Start with the annotation data
+            obj_data = annotation.copy()
+            
+            # Check for required files
+            if not ('mesh' in obj_data and 
+                   'thumbnails' in obj_data and 
+                   'images' in obj_data['thumbnails'] and 
+                   obj_data['thumbnails']['images']):
+                return None
+            
+            # Download and load mesh for analysis
+            downloaded = objaverse.load_objects([uid])
+            if not downloaded or uid not in downloaded:
+                return None
+                
+            mesh_path = downloaded[uid]
+            mesh = trimesh.load(mesh_path)
+            
+            if not isinstance(mesh, (trimesh.Trimesh, trimesh.Scene)):
+                return None
+                
+            # Analyze properties
+            properties = self.category_manager.analyze_object_properties(mesh)
+            
+            # Add basic mesh properties
+            if isinstance(mesh, trimesh.Trimesh):
+                properties.update({
+                    'vertex_count': len(mesh.vertices),
+                    'face_count': len(mesh.faces),
+                    'volume': mesh.volume if hasattr(mesh, 'volume') else 0,
+                    'bounding_box': mesh.bounding_box.extents.tolist()
+                })
+            
+            # Combine everything
+            obj_data.update(properties)
+            obj_data['mesh_path'] = mesh_path
+            
+            return obj_data
+            
+        except Exception as e:
+            logger.warning(f"Error loading and analyzing object {uid}: {e}")
+            return None 

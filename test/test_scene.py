@@ -1,12 +1,16 @@
+import os
 import sys
 from pathlib import Path
-sys.path.append(str(Path(__file__).parent / "src"))
 
-from scene_graph.scene_analyzer import analyze_scene_image
+# Add the project root directory to the Python path
+project_root = str(Path(__file__).parent.parent)
+sys.path.append(project_root)
 
+from src.scene_graph.scene_analyzer import analyze_scene_image
+from src.models.scene_graph import SceneGraph, SpatialRelation
 def main():
     # Path to the desk image
-    image_paths = ["desk1.jpeg", "desk2.jpeg", "desk3.jpeg", "desk4.jpeg"]
+    image_paths = ["src/utils/assets/desk1.jpeg", "src/utils/assets/desk2.jpeg", "src/utils/assets/desk3.jpeg", "src/utils/assets/desk4.jpeg"]
     print ("Analyzing images:")    
     print("=" * 50)
     
