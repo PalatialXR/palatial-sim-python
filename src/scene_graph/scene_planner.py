@@ -17,6 +17,8 @@ import trimesh  # For mesh manipulation
 import shutil   # For file operations
 import cv2
 from PIL import Image
+import xml.etree.ElementTree as ET
+from .scene_visualizer import visualize_scene_plan
 
 # Add the project root directory to the Python path
 project_root = str(Path(__file__).parent.parent.parent)
@@ -57,6 +59,7 @@ class ScenePlanner:
         # Placement parameters
         self.min_spacing = 0.05  # 5cm minimum spacing between objects
         self.default_grid_resolution = 0.02  # 2cm grid resolution
+        self.global_scale = 0.001  # Global scale factor for all objects
         
         # Map semantic names to PartNet IDs
         self.object_id_map = {
@@ -66,78 +69,229 @@ class ScenePlanner:
             "Mouse": ["101416", "101425", "101511"]  # Mouse IDs
         }
     
-    def precompute_placement(self, 
-                          relations: List[SpatialRelation],
-                          object_states: Optional[Dict[str, ObjectState]] = None) -> Tuple[List[str], Dict[str, ObjectState]]:
+    def precompute_placement(self, relations: List[SpatialRelation],
+                            object_states: Optional[Dict[str, ObjectState]] = None) -> Tuple[List[str], Dict[str, ObjectState]]:
         """Precompute optimal object placement order and hierarchy."""
-        logger.info(f"\n{'='*50}")
-        logger.info(f"Starting placement planning for {len(relations)} relations")
-        logger.info(f"Initial object states: {len(object_states) if object_states else 0} objects")
+        logger.info(f"\n{'='*80}")
+        logger.info(f"Starting Placement Planning")
+        logger.info(f"{'='*80}")
+        logger.info(f"Input: {len(relations)} relations, {len(object_states) if object_states else 0} objects")
+        
+        # Initialize return values with defaults
+        self.placement_order = []
+        if not self.objects and object_states:
+            self.objects = object_states
+            
+        # Generate visualization of initial state
+        initial_objects = [
+            {
+                'name': name,
+                'position': [float(p) if isinstance(p, (int, float, str)) else float(p[0]) for p in (state.position if state.position else [0, 0, 0])],
+                'dimensions': [float(d) if isinstance(d, (int, float, str)) else float(d[0]) for d in (state.bbox if state.bbox else [0.1, 0.1, 0.1])]
+            }
+            for name, state in self.objects.items()
+        ]
+        logger.info("\nPreparing visualization with objects:")
+        for obj in initial_objects:
+            logger.info(f"  {obj['name']}:")
+            logger.info(f"    Position: {obj['position']}")
+            logger.info(f"    Dimensions: {obj['dimensions']}")
+        visualize_scene_plan(initial_objects, "initial_scene.png")
+        logger.info("\nGenerated initial scene visualization: initial_scene.png")
         
         try:
             # First pass: Build object hierarchy
-            logger.info("\n1. Building object hierarchy...")
-            hierarchy = self._build_hierarchy(relations)
-            self._log_hierarchy_stats(hierarchy)
+            logger.info("\n=== 1. Building Object Hierarchy ===")
+            try:
+                hierarchy = self._build_hierarchy(relations)
+                self._log_hierarchy_stats(hierarchy)
+            except Exception as e:
+                logger.error(f"Error building hierarchy: {str(e)}")
+                # Create simple hierarchy if building fails
+                hierarchy = {"ground": {"children": set(), "parents": set()}}
+                for obj_name in self.objects:
+                    hierarchy[obj_name] = {"children": set(), "parents": {"ground"}}
+                    hierarchy["ground"]["children"].add(obj_name)
             
-            # Initialize object states based on hierarchy and provided states
-            logger.info("\n2. Initializing object states...")
-            self._initialize_object_states(hierarchy, object_states)
+            # Initialize object states
+            logger.info("\n=== 2. Initializing Object States ===")
+            try:
+                self._initialize_object_states(hierarchy, object_states)
+                logger.info(f"Initialized {len(self.objects)} object states")
+                for obj_name, obj_state in self.objects.items():
+                    logger.info(f"\n📦 {obj_name}:")
+                    logger.info(f"   Initial dimensions (w,l,h): {[f'{x:.3f}' for x in obj_state.bbox]}")
+                    if obj_state.position:
+                        logger.info(f"   Initial position (x,y,z): {[f'{x:.3f}' for x in obj_state.position]}")
+            except Exception as e:
+                logger.error(f"Error initializing object states: {str(e)}")
             
-            # Optimize object selection based on bounding box compatibility
-            logger.info("\n3. Optimizing object selection...")
-            selection_changes = self._optimize_object_selection(hierarchy)
+            # Generate visualization after initialization
+            initialized_objects = [
+                {
+                    'name': name,
+                    'position': state.position if state.position else [0, 0, 0],
+                    'dimensions': state.bbox if state.bbox else [0.1, 0.1, 0.1]
+                }
+                for name, state in self.objects.items()
+            ]
+            visualize_scene_plan(initialized_objects, "initialized_scene.png")
+            logger.info("\nGenerated initialized scene visualization: initialized_scene.png")
             
-            # Optimize object scales if needed
-            logger.info("\n4. Optimizing object scales...")
-            scale_changes = self._optimize_object_scales(hierarchy)
+            # Optimize object selection
+            logger.info("\n=== 3. Optimizing Object Selection ===")
+            try:
+                selection_changes = self._optimize_object_selection(hierarchy)
+                if selection_changes:
+                    logger.info("Made changes to object selection")
+            except Exception as e:
+                logger.error(f"Error optimizing selection: {str(e)}")
+                selection_changes = False
             
-            if selection_changes or scale_changes:
-                logger.info("\n5. Reinitializing placement grids due to dimension changes...")
-                self._reinitialize_placement_grids()
+            # Optimize object dimensions
+            logger.info("\n=== 4. Optimizing Object Dimensions ===")
+            try:
+                dimension_changes = self._optimize_object_dimensions(hierarchy)
+                if dimension_changes:
+                    logger.info("Made changes to object dimensions")
+            except Exception as e:
+                logger.error(f"Error optimizing dimensions: {str(e)}")
+                dimension_changes = False
+            
+            if selection_changes or dimension_changes:
+                logger.info("\n=== 5. Reinitializing Placement Grids ===")
+                try:
+                    self._reinitialize_placement_grids()
+                except Exception as e:
+                    logger.error(f"Error reinitializing grids: {str(e)}")
+                
+                # Generate visualization after optimization
+                optimized_objects = [
+                    {
+                        'name': name,
+                        'position': state.position if state.position else [0, 0, 0],
+                        'dimensions': state.bbox if state.bbox else [0.1, 0.1, 0.1]
+                    }
+                    for name, state in self.objects.items()
+                ]
+                visualize_scene_plan(optimized_objects, "optimized_scene.png")
+                logger.info("\nGenerated optimized scene visualization: optimized_scene.png")
             
             # Calculate placement order
-            logger.info("\n6. Calculating placement order...")
-            self._calculate_placement_order(hierarchy)
-            logger.info(f"Placement order determined: {self.placement_order}")
+            logger.info("\n=== 6. Calculating Placement Order ===")
+            try:
+                self._calculate_placement_order(hierarchy)
+                logger.info("\nFinal placement order:")
+                for i, obj_name in enumerate(self.placement_order, 1):
+                    obj_state = self.objects[obj_name]
+                    logger.info(f"\n{i}. 📦 {obj_name}")
+                    logger.info(f"   Dimensions (w,l,h): {[f'{x:.3f}' for x in obj_state.bbox]}")
+                    if obj_state.position:
+                        logger.info(f"   Position (x,y,z): {[f'{x:.3f}' for x in obj_state.position]}")
+                    logger.info(f"   Parent: {obj_state.parent if obj_state.parent else 'None'}")
+                    logger.info(f"   Children: {sorted(obj_state.children_on) if obj_state.children_on else 'None'}")
+            except Exception as e:
+                logger.error(f"Error calculating placement order: {str(e)}")
+                # Use simple order if calculation fails
+                self.placement_order = list(self.objects.keys())
             
             # Optimize surface allocation and determine positions
-            logger.info("\n7. Optimizing surface allocation...")
-            self._optimize_surface_allocation()
+            logger.info("\n=== 7. Optimizing Surface Allocation ===")
+            try:
+                self._optimize_surface_allocation()
+            except Exception as e:
+                logger.error(f"Error optimizing surface allocation: {str(e)}")
+                # Assign default positions if optimization fails
+                self._assign_default_positions()
             
-            # Log final positions and scales
-            logger.info("\n8. Final object configurations:")
+            # Generate final visualization
+            final_objects = [
+                {
+                    'name': name,
+                    'position': state.position if state.position else [0, 0, 0],
+                    'dimensions': state.bbox if state.bbox else [0.1, 0.1, 0.1]
+                }
+                for name, state in self.objects.items()
+            ]
+            visualize_scene_plan(final_objects, "final_scene.png")
+            logger.info("\nGenerated final scene visualization: final_scene.png")
+            
+            # Log final configuration
+            logger.info("\n=== Final Object Configurations ===")
             for obj_name, obj_state in self.objects.items():
-                logger.info(f"  • {obj_name}:")
+                logger.info(f"\n📦 {obj_name}:")
+                logger.info(f"   Final dimensions (w,l,h): {[f'{x:.3f}' for x in obj_state.bbox]}")
                 if obj_state.position:
-                    logger.info(f"    - Position: {[f'{x:.3f}' for x in obj_state.position]}")
+                    logger.info(f"   Final position (x,y,z): {[f'{x:.3f}' for x in obj_state.position]}")
                 else:
-                    logger.warning(f"    - Position: Not assigned")
-                logger.info(f"    - Scale: {[f'{x:.3f}' for x in obj_state.bbox]}")
+                    logger.warning(f"   ⚠️ Position not assigned")
+                if hasattr(obj_state, 'urdf_path'):
+                    logger.info(f"   URDF: {obj_state.urdf_path}")
+                if obj_state.parent:
+                    logger.info(f"   Parent: {obj_state.parent}")
+                if obj_state.children_on:
+                    logger.info(f"   Children: {sorted(obj_state.children_on)}")
             
             self._log_placement_stats()
-            logger.info(f"{'='*50}\n")
+            logger.info(f"\n{'='*80}\n")
             
             return self.placement_order, self.objects
             
         except Exception as e:
-            logger.error(f"Placement planning failed: {str(e)}")
-            logger.error(f"Traceback: {traceback.format_exc()}")
-            raise PlacementError(f"Failed to plan placement: {str(e)}")
+            logger.error(f"Placement planning encountered an error: {str(e)}")
+            logger.error(f"Returning partial results")
+            return self.placement_order, self.objects
     
     def _log_hierarchy_stats(self, hierarchy: Dict[str, Dict[str, Set[str]]]):
-        """Log statistics about the object hierarchy."""
+        """Log detailed statistics about the object hierarchy."""
         stats = self.placement_stats["hierarchy_stats"]
         stats["total_objects"] = len(hierarchy) - 1  # Excluding ground
         stats["root_objects"] = len(hierarchy["ground"]["children"])
         stats["leaf_objects"] = sum(1 for obj in hierarchy if not hierarchy[obj]["children"])
         stats["floating_objects"] = sum(1 for obj in hierarchy if not hierarchy[obj]["parents"] and obj != "ground")
         
-        logger.info("Hierarchy Statistics:")
-        logger.info(f"  Total objects: {stats['total_objects']}")
-        logger.info(f"  Root objects: {stats['root_objects']}")
-        logger.info(f"  Leaf objects: {stats['leaf_objects']}")
-        logger.info(f"  Floating objects: {stats['floating_objects']}")
+        logger.info("\n=== Scene Graph Structure Analysis ===")
+        logger.info(f"Total objects: {stats['total_objects']}")
+        logger.info(f"Root objects: {stats['root_objects']}")
+        logger.info(f"Leaf objects: {stats['leaf_objects']}")
+        logger.info(f"Floating objects: {stats['floating_objects']}")
+        
+        # Log detailed hierarchy
+        logger.info("\nHierarchy Tree:")
+        def print_hierarchy(node: str, level: int = 0):
+            indent = "  " * level
+            if node == "ground":
+                logger.info(f"{indent}📍 {node}")
+            else:
+                obj_state = self.objects.get(node)
+                dims = [f"{x:.3f}" for x in obj_state.bbox] if obj_state and obj_state.bbox else ["?", "?", "?"]
+                pos = [f"{x:.3f}" for x in obj_state.position] if obj_state and obj_state.position else ["?", "?", "?"]
+                logger.info(f"{indent}📦 {node}")
+                logger.info(f"{indent}   Dimensions (w,l,h): {dims}")
+                logger.info(f"{indent}   Position (x,y,z): {pos}")
+            
+            children = sorted(hierarchy[node]["children"])
+            if children:
+                logger.info(f"{indent}   Children: {children}")
+                for child in children:
+                    print_hierarchy(child, level + 1)
+        
+        # Print from root
+        print_hierarchy("ground")
+        
+        # Log spatial relationships
+        logger.info("\nSpatial Relationships:")
+        for obj_name, obj_state in self.objects.items():
+            if hasattr(obj_state, 'spatial_data') and obj_state.spatial_data:
+                relations = obj_state.spatial_data.get('relations', [])
+                if relations:
+                    logger.info(f"\n📦 {obj_name} relationships:")
+                    for rel in relations:
+                        logger.info(f"   • {rel.source} {rel.relation_type} {rel.target}")
+                        if hasattr(rel, 'distance') and rel.distance is not None:
+                            logger.info(f"     Distance: {rel.distance:.3f}m")
+                        if hasattr(rel, 'axis') and rel.axis is not None:
+                            logger.info(f"     Axis: {rel.axis}")
     
     def _build_hierarchy(self, relations: List[SpatialRelation]) -> Dict[str, Dict[str, Set[str]]]:
         """Build object hierarchy using graph analysis."""
@@ -168,7 +322,6 @@ class ScenePlanner:
         for source, target in support_edges:
             hierarchy[target]["children"].add(source)
             hierarchy[source]["parents"].add(target)
-            logger.debug(f"Added support relationship: {source} supported by {target}")
         
         # Find furniture pieces (degree analysis and name matching)
         furniture = {node for node in G.nodes() 
@@ -180,21 +333,19 @@ class ScenePlanner:
             if not hierarchy[node]["parents"]:
                 hierarchy["ground"]["children"].add(node)
                 hierarchy[node]["parents"].add("ground")
-                logger.debug(f"Connected furniture to ground: {node}")
         
         # Verify hierarchy is complete
         orphans = [node for node in G.nodes() 
                   if node != "ground" and not hierarchy[node]["parents"]]
         
         if orphans:
-            logger.warning(f"Found orphaned objects: {orphans}")
+            logger.info(f"Found orphaned objects: {orphans}")
             # Try to find best parent based on spatial relationships
             for orphan in orphans:
                 best_parent = self._find_best_parent(orphan, G, hierarchy)
                 if best_parent:
                     hierarchy[best_parent]["children"].add(orphan)
                     hierarchy[orphan]["parents"].add(best_parent)
-                    logger.info(f"Assigned orphan {orphan} to parent {best_parent}")
         
         return hierarchy
 
@@ -267,8 +418,8 @@ class ScenePlanner:
             logger.info(f"     Children: {sorted(children)}")
     
     def _optimize_surface_allocation(self):
-        """Optimize surface allocation for all objects."""
-        logger.info("\n=== Starting Surface Allocation ===")
+        """Optimize surface allocation for all objects while preserving semantic relationships."""
+        logger.info("=== Starting Surface Allocation ===")
         
         # Track placement statistics
         placement_stats = {
@@ -276,8 +427,19 @@ class ScenePlanner:
             "placed_objects": 0,
             "failed_placements": 0,
             "rotated_placements": 0,
-            "surface_utilization": {}
+            "surface_utilization": {},
+            "semantic_relations_preserved": 0,
+            "semantic_relations_total": 0
         }
+        
+        # First, build a semantic relationship map for quick lookup
+        semantic_relations = defaultdict(list)
+        for obj_name in self.placement_order:
+            obj_state = self.objects[obj_name]
+            if hasattr(obj_state, 'spatial_data') and obj_state.spatial_data:
+                for relation in obj_state.spatial_data.get('relations', []):
+                    semantic_relations[obj_name].append(relation)
+                    placement_stats["semantic_relations_total"] += 1
         
         # Process objects in hierarchy order
         for obj_name in self.placement_order:
@@ -286,50 +448,35 @@ class ScenePlanner:
                 # Place at origin
                 obj_state.position = (0.0, 0.0, obj_state.bbox[2]/2)
                 placement_stats["placed_objects"] += 1
-                logger.info(f"\n📦 Placed root object {obj_name} at origin")
                 continue
                 
             parent_state = self.objects[obj_state.parent]
-            logger.info(f"\n=== Processing {obj_name} ===")
             
-            # Log object properties
-            logger.info("📦 Object Properties:")
-            logger.info(f"   - Dimensions (w,l,h): {[f'{x:.3f}' for x in obj_state.bbox]}")
-            logger.info(f"   - Parent: {obj_state.parent}")
-            logger.info(f"   - Position: {obj_state.position if obj_state.position else 'Not placed'}")
-            logger.info(f"   - Children to place: {sorted(obj_state.children_on)}")
-            
-            # Sort children by size for better packing
-            children = sorted(
-                [(name, self.objects[name]) for name in obj_state.children_on],
-                key=lambda x: x[1].bbox[0] * x[1].bbox[1],
-                reverse=True
-            )
-            
-            # Log placement order
-            if children:
-                logger.info("\n📋 Placement order by size:")
-                for child_name, child_state in children:
-                    area = child_state.bbox[0] * child_state.bbox[1]
-                    logger.info(f"   - {child_name}: {area:.3f}m² ({child_state.bbox[0]:.3f}m × {child_state.bbox[1]:.3f}m)")
-            
-                # Calculate total surface area needed
-                total_area_needed = sum(c[1].bbox[0] * c[1].bbox[1] for c in children)
-                available_area = parent_state.bbox[0] * parent_state.bbox[1]
-                logger.info(f"\n📐 Surface Area Analysis:")
-                logger.info(f"   - Total area needed: {total_area_needed:.3f}m²")
-                logger.info(f"   - Available area: {available_area:.3f}m²")
-                logger.info(f"   - Required/Available ratio: {(total_area_needed/available_area)*100:.1f}%")
+            # Sort children by size and semantic importance
+            children = [(name, self.objects[name]) for name in (obj_state.children_on or [])]
+            children.sort(key=lambda x: (
+                len(semantic_relations[x[0]]),
+                x[1].bbox[0] * x[1].bbox[1]
+            ), reverse=True)
             
             # Try to place each child
             successful_placements = []
             failed_placements = []
             
             for child_name, child_state in children:
-                logger.info(f"\n🎯 Attempting to place: {child_name}")
+                # Get semantic relations for this child
+                child_relations = semantic_relations[child_name]
+                placed_relatives = [rel.target for rel in child_relations 
+                                  if rel.target in self.objects and 
+                                  self.objects[rel.target].position is not None]
                 
-                # Find stable position
-                position = self._find_stable_position(parent_state, child_state)
+                # Find stable position considering semantic relations
+                position = self._find_stable_position(
+                    parent_state, 
+                    child_state,
+                    semantic_relations=child_relations,
+                    placed_relatives=placed_relatives
+                )
                 
                 if position:
                     # Update object state and occupancy grid
@@ -337,43 +484,30 @@ class ScenePlanner:
                     self._update_occupancy_grid(parent_state, child_state)
                     successful_placements.append(child_name)
                     placement_stats["placed_objects"] += 1
-                else:
-                    # If placement fails, try with rotated orientation
-                    logger.info("   ↻ Trying rotated orientation...")
-                    # Swap width and length
-                    original_bbox = child_state.bbox
-                    child_state.bbox = (original_bbox[1], original_bbox[0], original_bbox[2])
-                    position = self._find_stable_position(parent_state, child_state)
                     
-                    if position:
-                        child_state.position = position
-                        self._update_occupancy_grid(parent_state, child_state)
+                    # Check if semantic relations were preserved
+                    for rel in child_relations:
+                        if rel.target in self.objects and self.objects[rel.target].position is not None:
+                            if self._verify_semantic_relation(rel, child_state, self.objects[rel.target]):
+                                placement_stats["semantic_relations_preserved"] += 1
+                else:
+                    # Try alternative placements while preserving semantic relations
+                    success = self._try_alternative_placements(
+                        parent_state,
+                        child_state,
+                        child_relations,
+                        placed_relatives
+                    )
+                    
+                    if success:
                         successful_placements.append(child_name)
                         placement_stats["placed_objects"] += 1
                         placement_stats["rotated_placements"] += 1
-                        logger.info(f"   ✅ Successfully placed {child_name} with rotation")
                     else:
-                        # Try with reduced spacing
-                        logger.info("   ↓ Trying with reduced spacing...")
-                        original_spacing = self.min_spacing
-                        self.min_spacing = max(0.01, self.min_spacing / 2)  # Reduce spacing but keep minimum
-                        position = self._find_stable_position(parent_state, child_state)
-                        self.min_spacing = original_spacing  # Restore original spacing
-                        
-                        if position:
-                            child_state.position = position
-                            self._update_occupancy_grid(parent_state, child_state)
-                            successful_placements.append(child_name)
-                            placement_stats["placed_objects"] += 1
-                            logger.info(f"   ✅ Successfully placed {child_name} with reduced spacing")
-                        else:
-                            # Restore original dimensions if placement failed
-                            child_state.bbox = original_bbox
-                            failed_placements.append(child_name)
-                            placement_stats["failed_placements"] += 1
-                            logger.warning(f"   ❌ Failed to place {child_name} after all attempts")
+                        failed_placements.append(child_name)
+                        placement_stats["failed_placements"] += 1
             
-            # Log placement summary for this object
+            # Calculate surface utilization
             if children:
                 placed_area = sum(
                     self.objects[name].bbox[0] * self.objects[name].bbox[1]
@@ -381,81 +515,124 @@ class ScenePlanner:
                 )
                 parent_area = parent_state.bbox[0] * parent_state.bbox[1]
                 utilization = (placed_area / parent_area) * 100 if parent_area > 0 else 0
-                
                 placement_stats["surface_utilization"][obj_name] = utilization
-                
-                logger.info(f"\n📊 Placement Summary for {obj_name}:")
-                logger.info(f"   - Successfully placed: {len(successful_placements)}/{len(children)} objects")
-                logger.info(f"   - Surface utilization: {utilization:.1f}%")
-                logger.info(f"   - Used area: {placed_area:.3f}m² / {parent_area:.3f}m²")
-                if failed_placements:
-                    logger.warning(f"   - Failed to place: {failed_placements}")
         
-        # Log overall placement statistics
-        logger.info("\n=== Final Placement Statistics ===")
-        logger.info(f"Total objects processed: {placement_stats['total_objects']}")
-        logger.info(f"Successfully placed: {placement_stats['placed_objects']}")
-        logger.info(f"Failed placements: {placement_stats['failed_placements']}")
-        logger.info(f"Objects placed with rotation: {placement_stats['rotated_placements']}")
-        logger.info("\nSurface Utilization by Parent:")
-        for obj, util in placement_stats["surface_utilization"].items():
-            logger.info(f"  • {obj}: {util:.1f}%")
-        
-        if placement_stats["failed_placements"] > 0:
-            logger.warning(f"\n⚠️ {placement_stats['failed_placements']} objects could not be placed")
+        return placement_stats["semantic_relations_preserved"] == placement_stats["semantic_relations_total"]
     
-    def _find_stable_position(self, parent: ObjectState, child: ObjectState) -> Optional[Tuple[float, float, float]]:
-        """Find a stable position for child object on parent's surface."""
-        try:
-            logger.info(f"\n🔍 Finding stable position for {child.name} on {parent.name}:")
-            logger.info(f"  📦 Child properties:")
-            logger.info(f"     - Original dimensions (w,l,h): {[f'{x:.3f}' for x in child.bbox]}")
-            logger.info(f"     - Required area: {(child.bbox[0] * child.bbox[1]):.3f}m²")
+    def _calculate_z_position(self, parent: ObjectState, child: ObjectState, relation_type: str = "on") -> float:
+        """Calculate proper z-position for an object based on parent and relationship type."""
+        if not parent.position:
+            # If parent has no position (e.g., ground), place at object's half-height
+            return child.bbox[2]/2
             
-            logger.info(f"  📦 Parent properties:")
-            logger.info(f"     - Dimensions (w,l,h): {[f'{x:.3f}' for x in parent.bbox]}")
-            logger.info(f"     - Available area: {(parent.bbox[0] * parent.bbox[1]):.3f}m²")
+        # Base z calculation starts from parent's top surface
+        base_z = parent.position[2] + parent.bbox[2]/2
+        
+        # Add small offset for physics stability
+        physics_offset = 0.001  # 1mm
+        
+        if relation_type == "on":
+            # Place directly on top of parent
+            return base_z + child.bbox[2]/2 + physics_offset
+            
+        elif relation_type == "above":
+            # Place with some clearance above parent
+            clearance = 0.05  # 5cm clearance for "above" relationship
+            return base_z + clearance + child.bbox[2]/2 + physics_offset
+            
+        elif relation_type == "aligned_with":
+            # Try to align centers vertically if possible
+            return parent.position[2]
+            
+        # Default to placing on top
+        return base_z + child.bbox[2]/2 + physics_offset
+
+    def _find_stable_position(self, parent: ObjectState, child: ObjectState,
+                              semantic_relations: List[SemanticRelation] = None,
+                              placed_relatives: List[str] = None) -> Optional[Tuple[float, float, float]]:
+        """Find a stable position for child object on parent's surface considering semantic relations."""
+        try:
+            # Determine primary relationship type for z-position calculation
+            relation_type = "on"  # default
+            if semantic_relations:
+                for rel in semantic_relations:
+                    if rel.target == parent.name:
+                        relation_type = rel.relation_type
+                        break
+            
+            # Calculate proper z-position first
+            z_pos = self._calculate_z_position(parent, child, relation_type)
             
             # Validate size compatibility
             if child.bbox[0] > parent.bbox[0] or child.bbox[1] > parent.bbox[1]:
-                logger.warning(f"  ⚠️ Child {child.name} is too large for parent {parent.name}")
-                logger.warning(f"     Child needs: {child.bbox[0]:.3f}m × {child.bbox[1]:.3f}m")
-                logger.warning(f"     Parent has: {parent.bbox[0]:.3f}m × {parent.bbox[1]:.3f}m")
                 return None
             
             # Initialize parent's grid if not already done
             if not parent.available_surface or not parent.grid_resolution:
-                parent.init_grid()
-                logger.info(f"     - Initialized grid for {parent.name} ({parent.grid_resolution}m resolution)")
+                try:
+                    parent.init_grid()
+                except Exception as e:
+                    logger.error(f"Error initializing grid: {str(e)}")
+                    return None
             
             grid_size = len(parent.available_surface)
             child_w = max(1, int(child.bbox[0] / parent.grid_resolution))
             child_l = max(1, int(child.bbox[1] / parent.grid_resolution))
             
-            logger.info(f"  🔲 Grid properties:")
-            logger.info(f"     • Grid size: {grid_size}×{grid_size} cells")
-            logger.info(f"     • Child size in grid: {child_w}×{child_l} cells")
-            logger.info(f"     • Resolution: {parent.grid_resolution}m per cell")
-            
             if child_w > grid_size or child_l > grid_size:
-                logger.warning(f"  ⚠️ Child {child.name} too large for parent grid")
-                logger.warning(f"     Child needs: {child_w}×{child_l} cells")
-                logger.warning(f"     Available: {grid_size}×{grid_size} cells")
-                
-                # Try rotating the object 90 degrees if it doesn't fit
-                if child_l <= grid_size and child_w <= grid_size:
-                    logger.info("     Trying 90-degree rotation...")
-                    child_w, child_l = child_l, child_w
-                    logger.info(f"     New grid size needed: {child_w}×{child_l} cells")
-                else:
-                    return None
+                return None
             
-            # Find valid position in grid
-            valid_pos = None
-            attempts = 0
-            start_time = time.time()
+            # Define search patterns based on semantic relations
+            if semantic_relations and placed_relatives:
+                # Calculate preferred position based on semantic relations
+                preferred_pos = self._calculate_preferred_position(
+                    parent, child, semantic_relations, placed_relatives
+                )
+                if preferred_pos:
+                    grid_x = int((preferred_pos[0] - parent.position[0] + parent.bbox[0]/2) / parent.grid_resolution)
+                    grid_y = int((preferred_pos[1] - parent.position[1] + parent.bbox[1]/2) / parent.grid_resolution)
+                    
+                    # Try positions around preferred position first
+                    radius = 1
+                    max_radius = max(grid_size - child_w, grid_size - child_l)
+                    
+                    while radius <= max_radius:
+                        # Try positions in expanding square around preferred position
+                        for i in range(-radius, radius + 1):
+                            for j in range(-radius, radius + 1):
+                                gi = grid_x + i
+                                gj = grid_y + j
+                                
+                                if (0 <= gi < grid_size - child_w + 1 and 
+                                    0 <= gj < grid_size - child_l + 1):
+                                    if all(parent.available_surface[gi+di][gj+dj] 
+                                          for di in range(child_w) 
+                                          for dj in range(child_l)):
+                                        # Convert grid position to world coordinates
+                                        world_pos = (
+                                            parent.position[0] + (gi * parent.grid_resolution) - (parent.bbox[0] / 2),
+                                            parent.position[1] + (gj * parent.grid_resolution) - (parent.bbox[1] / 2),
+                                            z_pos
+                                        )
+                                        
+                                        # Verify semantic relations
+                                        child.position = world_pos
+                                        relations_satisfied = True
+                                        
+                                        for rel in semantic_relations:
+                                            if rel.target in self.objects and self.objects[rel.target].position:
+                                                if not self._verify_semantic_relation(rel, child, self.objects[rel.target]):
+                                                    relations_satisfied = False
+                                                    break
+                                        
+                                        if relations_satisfied:
+                                            return world_pos
+                                        
+                                        child.position = None
+                        radius += 1
             
-            # Define search patterns (center-out spiral)
+            # If no semantic relations or couldn't find position satisfying them,
+            # fall back to regular grid search
             center_i = (grid_size - child_w) // 2
             center_j = (grid_size - child_l) // 2
             
@@ -463,1041 +640,1060 @@ class ScenePlanner:
             if all(parent.available_surface[center_i+di][center_j+dj] 
                   for di in range(child_w) 
                   for dj in range(child_l)):
-                valid_pos = (center_i, center_j)
-                logger.info(f"  ✅ Found center position at grid ({center_i}, {center_j})")
-            else:
-                logger.info("     Center position not available, trying spiral search...")
-                # Spiral out from center
-                max_radius = max(grid_size - child_w, grid_size - child_l)
-                found_position = False
+                return (
+                    parent.position[0] + (center_i * parent.grid_resolution) - (parent.bbox[0] / 2),
+                    parent.position[1] + (center_j * parent.grid_resolution) - (parent.bbox[1] / 2),
+                    z_pos
+                )
+            
+            # Spiral out from center
+            radius = 1
+            while radius <= max(grid_size - child_w, grid_size - child_l):
+                # Try positions in a square pattern around center
+                for i in range(-radius, radius+1):
+                    for j in [-radius, radius]:  # Top and bottom edges
+                        gi = center_i + i
+                        gj = center_j + j
+                        
+                        if (0 <= gi < grid_size - child_w + 1 and 
+                            0 <= gj < grid_size - child_l + 1):
+                            if all(parent.available_surface[gi+di][gj+dj] 
+                                  for di in range(child_w) 
+                                  for dj in range(child_l)):
+                                return (
+                                    parent.position[0] + (gi * parent.grid_resolution) - (parent.bbox[0] / 2),
+                                    parent.position[1] + (gj * parent.grid_resolution) - (parent.bbox[1] / 2),
+                                    z_pos
+                                )
                 
-                for r in range(1, max_radius + 1):
-                    if found_position:
-                        break
+                # Try left and right edges
+                for i in [-radius, radius]:
+                    for j in range(-radius+1, radius):
+                        gi = center_i + i
+                        gj = center_j + j
                         
-                    # Try positions in a square pattern around center
-                    for i in range(-r, r+1):
-                        for j in [-r, r]:  # Top and bottom edges
-                            gi = center_i + i
-                            gj = center_j + j
-                            attempts += 1
-                            
-                            if (0 <= gi < grid_size - child_w + 1 and 
-                                0 <= gj < grid_size - child_l + 1):
-                                if all(parent.available_surface[gi+di][gj+dj] 
-                                      for di in range(child_w) 
-                                      for dj in range(child_l)):
-                                    valid_pos = (gi, gj)
-                                    found_position = True
-                                    logger.info(f"  ✅ Found position at grid ({gi}, {gj}) after {attempts} attempts")
-                                    break
-                        if found_position:
-                            break
-                            
-                    if found_position:
-                        break
-                        
-                    # Try left and right edges
-                    for i in [-r, r]:  # Left and right edges
-                        for j in range(-r+1, r):
-                            gi = center_i + i
-                            gj = center_j + j
-                            attempts += 1
-                            
-                            if (0 <= gi < grid_size - child_w + 1 and 
-                                0 <= gj < grid_size - child_l + 1):
-                                if all(parent.available_surface[gi+di][gj+dj] 
-                                      for di in range(child_w) 
-                                      for dj in range(child_l)):
-                                    valid_pos = (gi, gj)
-                                    found_position = True
-                                    logger.info(f"  ✅ Found position at grid ({gi}, {gj}) after {attempts} attempts")
-                                    break
-                        if found_position:
-                            break
+                        if (0 <= gi < grid_size - child_w + 1 and 
+                            0 <= gj < grid_size - child_l + 1):
+                            if all(parent.available_surface[gi+di][gj+dj] 
+                                  for di in range(child_w) 
+                                  for dj in range(child_l)):
+                                return (
+                                    parent.position[0] + (gi * parent.grid_resolution) - (parent.bbox[0] / 2),
+                                    parent.position[1] + (gj * parent.grid_resolution) - (parent.bbox[1] / 2),
+                                    z_pos
+                                )
+                
+                radius += 1
             
-            search_time = time.time() - start_time
-            
-            if valid_pos is None:
-                logger.warning(f"  ❌ No valid position found after {attempts} attempts ({search_time:.3f}s)")
-                logger.warning(f"     Placement failed for {child.name} on {parent.name}")
-                return None
-            
-            # Convert grid position to world coordinates
-            grid_x, grid_y = valid_pos
-            
-            # Calculate world position relative to parent's position
-            if parent.position is None:
-                # If parent has no position yet (e.g., it's the table), place at origin
-                parent.position = (0.0, 0.0, parent.bbox[2]/2)
-                logger.info(f"  📍 Set parent {parent.name} position to origin")
-            
-            # Calculate offset from parent center
-            offset_x = (grid_x * parent.grid_resolution) - (parent.bbox[0] / 2)
-            offset_y = (grid_y * parent.grid_resolution) - (parent.bbox[1] / 2)
-            
-            # Add small height offset for physics stability
-            height_offset = 0.001  # 1mm offset
-            
-            # Calculate final world position
-            world_x = parent.position[0] + offset_x
-            world_y = parent.position[1] + offset_y
-            world_z = parent.position[2] + parent.bbox[2]/2 + child.bbox[2]/2 + height_offset
-            
-            logger.info(f"  📍 Position calculation:")
-            logger.info(f"     • Parent position: {[f'{x:.3f}' for x in parent.position]}")
-            logger.info(f"     • Grid offsets: ({offset_x:.3f}, {offset_y:.3f})")
-            logger.info(f"     • Final position: ({world_x:.3f}, {world_y:.3f}, {world_z:.3f})")
-            
-            return (world_x, world_y, world_z)
+            return None
             
         except Exception as e:
-            logger.error(f"  ❌ Error finding stable position for {child.name}: {str(e)}")
-            logger.error(f"  Traceback: {traceback.format_exc()}")
+            logger.error(f"Error finding stable position: {str(e)}")
             return None
-    
+
+    def _calculate_preferred_position(self, parent: ObjectState, child: ObjectState,
+                                    semantic_relations: List[SemanticRelation],
+                                    placed_relatives: List[str]) -> Optional[Tuple[float, float, float]]:
+        """Calculate preferred position based on semantic relations with placed objects."""
+        if not placed_relatives:
+            return None
+            
+        # Get positions of all placed relatives
+        relative_positions = []
+        for rel_name in placed_relatives:
+            if rel_name in self.objects and self.objects[rel_name].position:
+                relative_positions.append(self.objects[rel_name].position)
+        
+        if not relative_positions:
+            return None
+        
+        # Calculate average position of relatives
+        avg_x = sum(pos[0] for pos in relative_positions) / len(relative_positions)
+        avg_y = sum(pos[1] for pos in relative_positions) / len(relative_positions)
+        
+        # Adjust based on relation types
+        x_offset = 0
+        y_offset = 0
+        
+        for rel in semantic_relations:
+            if rel.target in self.objects and self.objects[rel.target].position:
+                target = self.objects[rel.target]
+                
+                if rel.relation_type == "next_to":
+                    # Place beside the target
+                    x_offset = (child.bbox[0] + target.bbox[0]) / 2
+                    
+                elif rel.relation_type == "in_front_of":
+                    # Place in front of target
+                    y_offset = (child.bbox[1] + target.bbox[1]) / 2
+                    
+                elif rel.relation_type == "behind":
+                    # Place behind target
+                    y_offset = -(child.bbox[1] + target.bbox[1]) / 2
+                    
+                elif rel.relation_type == "aligned_with":
+                    # Try to align with target
+                    x_offset = 0
+                    y_offset = 0
+        
+        # Return preferred position
+        return (avg_x + x_offset, avg_y + y_offset, parent.position[2] + parent.bbox[2]/2 + child.bbox[2]/2)
+
+    def _verify_semantic_relation(self, relation: SemanticRelation, obj1: ObjectState, obj2: ObjectState) -> bool:
+        """Verify if a semantic relation is satisfied by the current object positions."""
+        if not obj1.position or not obj2.position:
+            return False
+            
+        # Calculate distances and relative positions
+        dx = obj2.position[0] - obj1.position[0]
+        dy = obj2.position[1] - obj1.position[1]
+        dz = obj2.position[2] - obj1.position[2]
+        
+        # Distance between centers in XY plane
+        distance_xy = np.sqrt(dx*dx + dy*dy)
+        
+        # Combined dimensions
+        combined_width = (obj1.bbox[0] + obj2.bbox[0]) / 2
+        combined_length = (obj1.bbox[1] + obj2.bbox[1]) / 2
+        combined_height = (obj1.bbox[2] + obj2.bbox[2]) / 2
+        
+        # Check different relation types with proper z-index consideration
+        if relation.relation_type == "on":
+            # One object should be directly on top of the other
+            return (abs(dx) < combined_width * 0.5 and 
+                   abs(dy) < combined_length * 0.5 and 
+                   abs(dz - (obj2.bbox[2] + obj1.bbox[2])/2) < 0.01)  # 1cm tolerance
+            
+        elif relation.relation_type == "above":
+            # Object should be above with some clearance
+            min_clearance = 0.05  # 5cm minimum clearance
+            return (abs(dx) < combined_width * 0.5 and 
+                   abs(dy) < combined_length * 0.5 and 
+                   dz > min_clearance)
+            
+        elif relation.relation_type == "next_to":
+            # Objects should be at similar height and adjacent
+            return (distance_xy < combined_width * 1.5 and 
+                   distance_xy > combined_width * 0.5 and
+                   abs(dz) < combined_height * 0.3)  # Allow some height difference
+            
+        elif relation.relation_type == "aligned_with":
+            # Objects should be aligned along one axis and at similar heights
+            return ((abs(dx) < combined_width * 0.2 or abs(dy) < combined_length * 0.2) and
+                   abs(dz) < combined_height * 0.3)
+            
+        elif relation.relation_type == "in_front_of":
+            # One object should be in front and at similar height
+            return (abs(dy) > combined_length * 0.5 and 
+                   abs(dx) < combined_width * 0.5 and
+                   abs(dz) < combined_height * 0.3)
+            
+        return False
+
+    def _apply_global_scaling(self, urdf_path: str) -> str:
+        """Apply global scaling to a URDF file and return path to scaled version.
+        
+        Args:
+            urdf_path: Path to original URDF file
+            
+        Returns:
+            str: Path to scaled URDF file
+        """
+        try:
+            # Convert to Path object for robust path handling
+            urdf_path = Path(urdf_path)
+            
+            # Verify the file exists and is a URDF
+            if not urdf_path.exists():
+                logger.error(f"URDF file not found: {urdf_path}")
+                return str(urdf_path)
+                
+            if urdf_path.name != "mobility.urdf":
+                logger.warning(f"Unexpected URDF filename: {urdf_path.name}, expected 'mobility.urdf'")
+            
+            # Create scaled URDF path in the same directory
+            scaled_path = urdf_path.parent / "mobility_scaled.urdf"
+            
+            # Check if scaled version already exists
+            if scaled_path.exists():
+                logger.info(f"Using existing scaled URDF: {scaled_path}")
+                return str(scaled_path)
+            
+            # Parse and modify URDF
+            tree = ET.parse(urdf_path)
+            root = tree.getroot()
+            
+            # Track if we made any changes
+            changes_made = False
+            
+            # Update all mesh scales
+            for mesh in root.findall(".//mesh"):
+                current_scale = mesh.get("scale")
+                if current_scale:
+                    # Parse existing scale
+                    try:
+                        sx, sy, sz = map(float, current_scale.split())
+                        # Apply additional global scaling
+                        new_scale = f"{sx * self.global_scale} {sy * self.global_scale} {sz * self.global_scale}"
+                    except ValueError:
+                        # If parsing fails, use default global scale
+                        new_scale = f"{self.global_scale} {self.global_scale} {self.global_scale}"
+                else:
+                    # Set new global scale
+                    new_scale = f"{self.global_scale} {self.global_scale} {self.global_scale}"
+                mesh.set("scale", new_scale)
+                changes_made = True
+                
+                # Also verify mesh file exists
+                mesh_file = mesh.get("filename")
+                if mesh_file:
+                    mesh_path = urdf_path.parent / mesh_file
+                    if not mesh_path.exists():
+                        logger.warning(f"Mesh file not found: {mesh_path}")
+            
+            # Update all origins to account for scaling
+            for origin in root.findall(".//origin"):
+                if "xyz" in origin.attrib:
+                    try:
+                        x, y, z = map(float, origin.get("xyz").split())
+                        new_xyz = f"{x * self.global_scale} {y * self.global_scale} {z * self.global_scale}"
+                        origin.set("xyz", new_xyz)
+                        changes_made = True
+                    except ValueError:
+                        logger.warning(f"Failed to parse origin xyz: {origin.get('xyz')}")
+            
+            if changes_made:
+                # Create backup of original file
+                backup_path = urdf_path.parent / "mobility.urdf.backup"
+                if not backup_path.exists():
+                    import shutil
+                    shutil.copy2(urdf_path, backup_path)
+                    logger.info(f"Created backup: {backup_path}")
+                
+                # Save scaled version
+                tree.write(scaled_path, xml_declaration=True, encoding='utf-8')
+                logger.info(f"Created scaled URDF: {scaled_path}")
+                logger.info(f"Applied global scale: {self.global_scale}")
+                return str(scaled_path)
+            else:
+                logger.info(f"No scaling needed for: {urdf_path}")
+                return str(urdf_path)
+                
+        except Exception as e:
+            logger.error(f"Error applying global scaling to {urdf_path}: {str(e)}")
+            logger.error(f"Traceback: {traceback.format_exc()}")
+            return str(urdf_path)
+
+    def _initialize_object_states(self, hierarchy: Dict[str, Dict[str, Set[str]]], object_states: Optional[Dict[str, ObjectState]] = None):
+        """Initialize object states based on hierarchy and provided states."""
+        # Initialize or update object states
+        for obj_name in hierarchy:
+            if obj_name == "ground":
+                continue
+                
+            # Create or update object state
+            if obj_name not in self.objects:
+                if object_states and obj_name in object_states:
+                    obj_state = object_states[obj_name]
+                    
+                    # Apply global scaling to URDF if available
+                    if hasattr(obj_state, 'urdf_path') and obj_state.urdf_path:
+                        obj_state.urdf_path = self._apply_global_scaling(obj_state.urdf_path)
+                        
+                        # Scale bounding box dimensions
+                        if obj_state.bbox:
+                            obj_state.bbox = tuple(dim * self.global_scale for dim in obj_state.bbox)
+                            logger.info(f"Scaled {obj_name} dimensions to: {[f'{x:.3f}' for x in obj_state.bbox]}")
+                    
+                    self.objects[obj_name] = obj_state
+                else:
+                    logger.warning(f"No state information provided for {obj_name}")
+                    continue
+            
+            # Set parent relationship
+            parent = next(iter(hierarchy[obj_name]["parents"]), None)
+            if parent and parent != "ground":
+                self.objects[obj_name].parent = parent
+                
+            # Set children relationships
+            children = hierarchy[obj_name]["children"]
+            if children:
+                self.objects[obj_name].children_on = children
+            
+            # Initialize placement grid if needed
+            if not self.objects[obj_name].grid_resolution:
+                try:
+                    self.objects[obj_name].init_grid(resolution=self.default_grid_resolution)
+                except Exception as e:
+                    logger.error(f"Failed to initialize grid for {obj_name}: {str(e)}")
+                
+        return self.objects
+
+    def _optimize_object_selection(self, hierarchy: Dict[str, Dict[str, Set[str]]]) -> bool:
+        """Optimize object selection based on compatibility and constraints."""
+        logger.info("\n=== Object Selection Analysis ===")
+        changes_made = False
+        
+        try:
+            for obj_name in hierarchy:
+                if obj_name == "ground":
+                    continue
+                    
+                if obj_name not in self.objects:
+                    continue
+                    
+                obj_state = self.objects[obj_name]
+                logger.info(f"\n📦 Analyzing {obj_name}:")
+                logger.info(f"   Original dimensions (w,l,h): {[f'{x:.3f}' for x in obj_state.bbox]}")
+                if hasattr(obj_state, 'urdf_path'):
+                    logger.info(f"   URDF path: {obj_state.urdf_path}")
+                
+                # Check if object dimensions are compatible with parent
+                parent = next(iter(hierarchy[obj_name]["parents"]), None)
+                if parent and parent != "ground" and parent in self.objects:
+                    parent_state = self.objects[parent]
+                    logger.info(f"   Parent: {parent}")
+                    logger.info(f"   Parent dimensions (w,l,h): {[f'{x:.3f}' for x in parent_state.bbox]}")
+                    
+                    # Check if object is too large for parent
+                    if (obj_state.bbox[0] > parent_state.bbox[0] or 
+                        obj_state.bbox[1] > parent_state.bbox[1]):
+                        logger.warning(f"   ⚠️ Object {obj_name} is too large for parent {parent}")
+                        logger.warning(f"      Object needs: {obj_state.bbox[0]:.3f}m × {obj_state.bbox[1]:.3f}m")
+                        logger.warning(f"      Parent has: {parent_state.bbox[0]:.3f}m × {parent_state.bbox[1]:.3f}m")
+                        # Future: Implement object replacement logic here
+                        
+            return changes_made
+            
+        except Exception as e:
+            logger.error(f"Error in object selection optimization: {str(e)}")
+            return False
+
+    def _optimize_object_dimensions(self, hierarchy: Dict[str, Dict[str, Set[str]]]) -> bool:
+        """Optimize object dimensions based on scene constraints."""
+        logger.info("\n=== Object Dimension Optimization ===")
+        changes_made = False
+        
+        try:
+            for obj_name in hierarchy:
+                if obj_name == "ground":
+                    continue
+                    
+                if obj_name not in self.objects:
+                    continue
+                    
+                obj_state = self.objects[obj_name]
+                logger.info(f"\n📦 Analyzing {obj_name}:")
+                logger.info(f"   Original dimensions (w,l,h): {[f'{x:.3f}' for x in obj_state.bbox]}")
+                
+                # Check for unrealistic dimensions
+                if any(dim <= 0 or dim > 5.0 for dim in obj_state.bbox):  # 5m max dimension
+                    logger.warning(f"   ⚠️ Object {obj_name} has unrealistic dimensions")
+                    # Scale down if too large
+                    max_dim = max(obj_state.bbox)
+                    if max_dim > 5.0:
+                        scale_factor = 5.0 / max_dim
+                        original_dims = obj_state.bbox
+                        obj_state.bbox = tuple(dim * scale_factor for dim in obj_state.bbox)
+                        changes_made = True
+                        logger.info(f"   📏 Scaled down dimensions:")
+                        logger.info(f"      From: {[f'{x:.3f}' for x in original_dims]}")
+                        logger.info(f"      To:   {[f'{x:.3f}' for x in obj_state.bbox]}")
+                        logger.info(f"      Scale factor: {scale_factor:.3f}")
+                
+                # Check parent-child size relationships
+                parent = next(iter(hierarchy[obj_name]["parents"]), None)
+                if parent and parent != "ground" and parent in self.objects:
+                    parent_state = self.objects[parent]
+                    logger.info(f"   Parent: {parent}")
+                    logger.info(f"   Parent dimensions (w,l,h): {[f'{x:.3f}' for x in parent_state.bbox]}")
+                    
+                    # Ensure child isn't larger than parent in any dimension
+                    needs_scaling = False
+                    scale_factors = []
+                    for i, (child_dim, parent_dim) in enumerate(zip(obj_state.bbox, parent_state.bbox)):
+                        if child_dim > parent_dim:
+                            needs_scaling = True
+                            scale_factors.append(parent_dim / child_dim)
+                        else:
+                            scale_factors.append(1.0)
+                    
+                    if needs_scaling:
+                        # Use minimum scale factor to maintain proportions
+                        scale_factor = min(scale_factors)
+                        original_dims = obj_state.bbox
+                        obj_state.bbox = tuple(dim * scale_factor for dim in obj_state.bbox)
+                        changes_made = True
+                        logger.info(f"   📏 Scaled to fit parent:")
+                        logger.info(f"      From: {[f'{x:.3f}' for x in original_dims]}")
+                        logger.info(f"      To:   {[f'{x:.3f}' for x in obj_state.bbox]}")
+                        logger.info(f"      Scale factor: {scale_factor:.3f}")
+                    else:
+                        logger.info("   ✅ Dimensions are compatible with parent")
+            
+            return changes_made
+            
+        except Exception as e:
+            logger.error(f"Error in dimension optimization: {str(e)}")
+            return False
+
+    def _log_placement_stats(self):
+        """Log detailed placement statistics."""
+        logger.info("\nPlacement Statistics:")
+        
+        # Object counts
+        total_objects = len(self.objects)
+        placed_objects = sum(1 for obj in self.objects.values() if obj.position is not None)
+        unplaced_objects = total_objects - placed_objects
+        
+        logger.info(f"Total Objects: {total_objects}")
+        logger.info(f"Successfully Placed: {placed_objects}")
+        logger.info(f"Failed to Place: {unplaced_objects}")
+        
+        # Hierarchy statistics
+        root_objects = sum(1 for obj in self.objects.values() if not obj.parent)
+        leaf_objects = sum(1 for obj in self.objects.values() if not obj.children_on)
+        
+        logger.info("\nHierarchy Statistics:")
+        logger.info(f"Root Objects: {root_objects}")
+        logger.info(f"Leaf Objects: {leaf_objects}")
+        
+        # Surface utilization
+        if self.placement_stats["surface_utilization"]:
+            logger.info("\nSurface Utilization:")
+            for parent, utilization in self.placement_stats["surface_utilization"].items():
+                logger.info(f"  {parent}: {utilization:.1f}%")
+        
+        # Placement failures
+        if self.placement_stats["placement_failures"]:
+            logger.info("\nPlacement Failures:")
+            for obj, reasons in self.placement_stats["placement_failures"].items():
+                logger.info(f"  {obj}: {', '.join(reasons)}")
+        
+        # Stability checks
+        stable_count = sum(1 for stable in self.placement_stats["stability_checks"].values() if stable)
+        logger.info(f"\nStability Checks Passed: {stable_count}/{total_objects}")
+        
+        # Collision counts
+        if self.placement_stats["collision_counts"]:
+            total_collisions = sum(self.placement_stats["collision_counts"].values())
+            logger.info(f"Total Collision Resolutions: {total_collisions}")
+
+    def _reinitialize_placement_grids(self):
+        """Reinitialize placement grids for all objects."""
+        logger.info("Reinitializing placement grids...")
+        for obj_name, obj_state in self.objects.items():
+            try:
+                obj_state.init_grid(resolution=self.default_grid_resolution)
+                logger.info(f"Reinitialized grid for {obj_name}")
+            except Exception as e:
+                logger.error(f"Failed to reinitialize grid for {obj_name}: {str(e)}")
+
     def _update_occupancy_grid(self, parent: ObjectState, child: ObjectState):
-        """Update parent's occupancy grid after placing child object."""
-        if child.position is None or not parent.available_surface or not parent.grid_resolution:
+        """Update parent's occupancy grid with child's footprint."""
+        if not parent.available_surface or not parent.grid_resolution:
+            parent.init_grid(resolution=self.default_grid_resolution)
+        
+        if not child.position:
             return
             
-        # Convert world position to grid coordinates
+        # Convert child position to grid coordinates
         grid_x = int((child.position[0] - parent.position[0] + parent.bbox[0]/2) / parent.grid_resolution)
         grid_y = int((child.position[1] - parent.position[1] + parent.bbox[1]/2) / parent.grid_resolution)
         
-        # Mark occupied cells
-        child_w = int(child.bbox[0] / parent.grid_resolution)
-        child_l = int(child.bbox[1] / parent.grid_resolution)
+        # Calculate child footprint in grid cells
+        child_w = max(1, int(child.bbox[0] / parent.grid_resolution))
+        child_l = max(1, int(child.bbox[1] / parent.grid_resolution))
         
-        cells_marked = 0
-        for i in range(child_w):
-            for j in range(child_l):
-                if 0 <= grid_x + i < len(parent.available_surface) and \
-                   0 <= grid_y + j < len(parent.available_surface[0]):
-                    parent.available_surface[grid_x + i][grid_y + j] = False
-                    cells_marked += 1
-        
-        logger.debug(f"Marked {cells_marked} cells as occupied for {child.name}")
-    
-    def _log_placement_stats(self):
-        """Log comprehensive placement statistics."""
-        stats = self.placement_stats
-        
-        logger.info("\nPlacement Statistics:")
-        logger.info("-------------------")
-        logger.info(f"Total objects placed: {len(self.placement_order)}")
-        
-        if stats["placement_failures"]:
-            logger.warning("\nPlacement Failures:")
-            for parent, children in stats["placement_failures"].items():
-                logger.warning(f"  {parent}: Failed to place {len(children)} children")
-                for child in children:
-                    logger.warning(f"    - {child}")
-        
-        logger.info("\nSurface Utilization:")
-        for obj, utilization in stats["surface_utilization"].items():
-            logger.info(f"  {obj}: {utilization:.2%}")
-        
-        logger.info("\nHierarchy Statistics:")
-        for stat, value in stats["hierarchy_stats"].items():
-            logger.info(f"  {stat}: {value}")
+        # Mark grid cells as occupied
+        grid_size = len(parent.available_surface)
+        for i in range(max(0, grid_x), min(grid_size, grid_x + child_w)):
+            for j in range(max(0, grid_y), min(grid_size, grid_y + child_l)):
+                parent.available_surface[i][j] = False
 
-    def _get_partnet_id(self, obj_name: str) -> Optional[str]:
-        """Map semantic object name to PartNet ID."""
-        try:
-            # Extract base name without number (e.g., "Monitor_0" -> "Monitor")
-            base_name = obj_name.split('_')[0]
-            
-            # Get list of possible IDs for this object type
-            possible_ids = self.object_id_map.get(base_name)
-            if not possible_ids:
-                logger.warning(f"No PartNet IDs found for object type: {base_name}")
-                return None
-            
-            # Use consistent ID for same numbered objects (e.g., all Monitor_0 use first ID)
-            if '_' in obj_name:
-                obj_num = int(obj_name.split('_')[1])
-                id_idx = obj_num % len(possible_ids)
-                return possible_ids[id_idx]
-            
-            # If no number, use first ID
-            return possible_ids[0]
-            
-        except Exception as e:
-            logger.error(f"Error mapping object name to PartNet ID: {str(e)}")
-            return None
-
-    def _get_mesh_dimensions(self, obj_name: str) -> Optional[Tuple[float, float, float]]:
-        """Extract dimensions from mesh files and URDF transforms in the PartNet dataset."""
-        try:
-            # Get PartNet ID for this object
-            obj_id = self._get_partnet_id(obj_name)
-            if not obj_id:
-                return None
-            
-            # Find the object directory in the dataset
-            dataset_path = Path(project_root) / "src" / "datasets" / "partnet-mobility-v0" / "dataset"
-            obj_dir = dataset_path / obj_id
-            
-            if not obj_dir.exists():
-                logger.warning(f"Could not find mesh directory for object {obj_name} (ID: {obj_id})")
-                return None
-            
-            # First read URDF file to get transforms
-            urdf_file = obj_dir / "mobility.urdf"
-            if not urdf_file.exists():
-                logger.warning(f"No URDF file found for object {obj_name} (ID: {obj_id})")
-                return None
-            
-            import xml.etree.ElementTree as ET
-            tree = ET.parse(urdf_file)
-            root = tree.getroot()
-            
-            # Extract transforms from URDF
-            transforms = []
-            for link in root.findall(".//link"):
-                for visual in link.findall(".//visual"):
-                    origin = visual.find("origin")
-                    if origin is not None:
-                        # Get position and rotation
-                        xyz = [float(x) for x in origin.get("xyz", "0 0 0").split()]
-                        rpy = [float(r) for r in origin.get("rpy", "0 0 0").split()]
-                        transforms.append((xyz, rpy))
-            
-            # Process mesh files with transforms
-            min_x, min_y, min_z = float('inf'), float('inf'), float('inf')
-            max_x, max_y, max_z = float('-inf'), float('-inf'), float('-inf')
-            
-            # Get all OBJ files in the textured_objs directory
-            obj_files = list((obj_dir / "textured_objs").glob("*.obj"))
-            if not obj_files:
-                logger.warning(f"No mesh files found for object {obj_name} (ID: {obj_id})")
-                return None
-            
-            import numpy as np
-            from scipy.spatial.transform import Rotation
-            
-            vertex_count = 0
-            for obj_file in obj_files:
-                vertices = []
-                with open(obj_file, 'r') as f:
-                    for line in f:
-                        if line.startswith('v '):  # Vertex line
-                            _, x, y, z = line.split()
-                            vertices.append([float(x), float(y), float(z)])
-                
-                if not vertices:
-                    continue
-                
-                vertices = np.array(vertices)
-                vertex_count += len(vertices)
-                
-                # Apply URDF transforms to vertices
-                for xyz, rpy in transforms:
-                    # Create rotation matrix from RPY angles
-                    R = Rotation.from_euler('xyz', rpy).as_matrix()
-                    
-                    # Apply rotation and translation
-                    vertices = vertices @ R.T + xyz
-                
-                # Update bounds
-                min_x = min(min_x, vertices[:, 0].min())
-                min_y = min(min_y, vertices[:, 1].min())
-                min_z = min(min_z, vertices[:, 2].min())
-                max_x = max(max_x, vertices[:, 0].max())
-                max_y = max(max_y, vertices[:, 1].max())
-                max_z = max(max_z, vertices[:, 2].max())
-            
-            if min_x == float('inf'):
-                logger.warning(f"No vertices found in mesh files for object {obj_name} (ID: {obj_id})")
-                return None
-            
-            # Calculate dimensions
-            width = max_x - min_x
-            length = max_y - min_y
-            height = max_z - min_z
-            
-            # Add small padding for physics stability
-            padding = max(0.01, min(width, length, height) * 0.05)  # 1cm or 5% of smallest dimension
-            width += padding
-            length += padding
-            height += padding
-            
-            logger.info(f"Extracted mesh dimensions for {obj_name} (ID: {obj_id}):")
-            logger.info(f"  Width: {width:.3f}m")
-            logger.info(f"  Length: {length:.3f}m")
-            logger.info(f"  Height: {height:.3f}m")
-            logger.info(f"  Vertices processed: {vertex_count}")
-            logger.info(f"  Transforms applied: {len(transforms)}")
-            
-            return (abs(width), abs(length), abs(height))
-        except Exception as e:
-            logger.error(f"Error extracting mesh dimensions for {obj_name}: {str(e)}")
-            logger.error(f"Traceback: {traceback.format_exc()}")
-            return None
-
-    def _initialize_object_states(self, 
-                                hierarchy: Dict[str, Dict[str, Set[str]]], 
-                                object_states: Optional[Dict[str, ObjectState]] = None):
-        """Initialize object states with hierarchy information and provided states."""
-        logger.info("Initializing object states:")
+    def _assign_default_positions(self):
+        """Assign default positions to objects without positions."""
+        logger.info("Assigning default positions to unplaced objects...")
         
-        # First pass: Create basic states
-        for obj_name in hierarchy:
-            if obj_name == "ground":
-                continue
-            
-            logger.info(f"\nProcessing {obj_name}:")
-            
-            # Create or update object state
-            if obj_name not in self.objects:
-                # Try to get dimensions from mesh first
-                mesh_dims = self._get_mesh_dimensions(obj_name)
-                
-                if object_states and obj_name in object_states:
-                    provided_state = object_states[obj_name]
-                    logger.info(f"  Using provided state:")
-                    logger.info(f"  - Bbox: {provided_state.bbox}")
-                    logger.info(f"  - Position: {provided_state.position if hasattr(provided_state, 'position') else None}")
-                    
-                    # If we have mesh dimensions, use them to validate/adjust provided dimensions
-                    if mesh_dims:
-                        scale_factor = 1.0
-                        if provided_state.bbox:
-                            # Calculate scale factor more robustly
-                            ratios = []
-                            for i in range(3):
-                                if mesh_dims[i] > 1e-6:  # Avoid division by very small numbers
-                                    ratios.append(provided_state.bbox[i] / mesh_dims[i])
-                            if ratios:
-                                # Use median ratio to avoid outliers
-                                scale_factor = sorted(ratios)[len(ratios)//2]
-                            logger.info(f"  Adjusting provided dimensions by scale factor: {scale_factor:.3f}")
-                        
-                        bbox = tuple(d * scale_factor for d in mesh_dims)
-                    else:
-                        bbox = provided_state.bbox
-                    
-                    self.objects[obj_name] = ObjectState(
-                        name=obj_name,
-                        bbox=bbox,
-                        position=provided_state.position if hasattr(provided_state, 'position') else None
-                    )
-                else:
-                    if mesh_dims:
-                        logger.info(f"  Using mesh dimensions for {obj_name}")
-                        self.objects[obj_name] = ObjectState(
-                            name=obj_name,
-                            bbox=mesh_dims
-                        )
-                    else:
-                        # Use category-specific default sizes
-                        base_name = obj_name.split('_')[0]
-                        default_sizes = {
-                            "Table": (1.5, 0.75, 0.75),
-                            "Monitor": (0.6, 0.4, 0.4),
-                            "Keyboard": (0.45, 0.15, 0.03),
-                            "Mouse": (0.12, 0.07, 0.04)
-                        }
-                        default_size = default_sizes.get(base_name, (1.0, 1.0, 1.0))
-                        logger.warning(f"  Using default values for {obj_name}: {default_size}")
-                        self.objects[obj_name] = ObjectState(
-                            name=obj_name,
-                            bbox=default_size
-                        )
-            
+        # Track used positions to avoid overlap
+        used_positions = set()
+        grid_size = 1.0  # 1m grid for default placement
+        
+        for obj_name in self.placement_order:
             obj_state = self.objects[obj_name]
-            
-            # Set hierarchy information
-            parent = next(iter(hierarchy[obj_name]["parents"]), None)
-            if parent == "ground":
-                parent = None
-            obj_state.parent = parent
-            obj_state.children_on = hierarchy[obj_name]["children"]
-            
-            logger.info(f"  Final state:")
-            logger.info(f"  - Parent: {obj_state.parent}")
-            logger.info(f"  - Children: {sorted(obj_state.children_on)}")
-            logger.info(f"  - Bbox: {[f'{x:.3f}' for x in obj_state.bbox]}")
-            if obj_state.position:
-                logger.info(f"  - Position: {[f'{x:.3f}' for x in obj_state.position]}")
-        
-        # Second pass: Initialize placement grids for objects that will have children
-        for obj_name, obj_state in self.objects.items():
-            if obj_state.children_on:
-                if not obj_state.grid_resolution:
-                    # Initialize grid with resolution based on smallest child
-                    min_child_dim = float('inf')
-                    for child in obj_state.children_on:
-                        if child in self.objects:
-                            child_state = self.objects[child]
-                            min_dim = min(child_state.bbox[0], child_state.bbox[1])
-                            min_child_dim = min(min_child_dim, min_dim)
-                    
-                    # Use grid resolution of 1/10th of smallest child or 0.1m, whichever is smaller
-                    resolution = min(0.1, min_child_dim / 10)
-                    obj_state.init_grid(resolution)
-                    logger.info(f"Initialized placement grid for {obj_name} with resolution {resolution:.3f}m")
-        
-        logger.info(f"\nInitialized states for {len(self.objects)} objects")
-        for obj_name, obj_state in self.objects.items():
-            logger.info(f"  • {obj_name}:")
-            logger.info(f"    - Bbox: {[f'{x:.3f}' for x in obj_state.bbox]}")
-            logger.info(f"    - Parent: {obj_state.parent}")
-            logger.info(f"    - Children: {sorted(obj_state.children_on)}")
-            if obj_state.grid_resolution:
-                logger.info(f"    - Grid resolution: {obj_state.grid_resolution:.3f}m")
-
-    def _optimize_object_scales(self, hierarchy: Dict[str, Dict[str, Set[str]]]) -> bool:
-        """Optimize object scales by modifying URDF and mesh files directly."""
-        logger.info("Starting scale optimization...")
-        
-        # Store original scales for comparison
-        original_scales = {name: state.bbox for name, state in self.objects.items()}
-        
-        # Prepare context for LLM
-        context = []
-        for obj_name, obj_state in self.objects.items():
-            parent = obj_state.parent if obj_state.parent else "ground"
-            children = sorted(obj_state.children_on) if obj_state.children_on else []
-            
-            # Include image information if available
-            image_info = getattr(obj_state, 'image_info', None)
-            
-            context.append({
-                "name": obj_name,
-                "category": ''.join([c for c in obj_name if not c.isdigit()]).rstrip('_'),
-                "current_dimensions": {
-                    "width": obj_state.bbox[0],
-                    "length": obj_state.bbox[1],
-                    "height": obj_state.bbox[2]
-                },
-                "parent": parent,
-                "children": children,
-                "image_info": image_info
-            })
-        
-        # Get scaling suggestions from LLM
-        scaling_suggestions = self._get_scale_suggestions(context)
-        
-        # Track if any scales changed
-        scales_changed = False
-        
-        # Initialize PartNet manager for file updates
-        dataset_path = Path(project_root) / "src" / "datasets" / "partnet-mobility-v0"
-        partnet_manager = PartNetManager(str(dataset_path))
-        
-        # Apply scaling suggestions by updating URDF and mesh files
-        for obj_name, scale_info in scaling_suggestions.items():
-            if obj_name in self.objects:
-                obj_state = self.objects[obj_name]
-                old_bbox = obj_state.bbox
-                
-                # Calculate scale factors
-                scale_factors = (
-                    scale_info["scale_x"],
-                    scale_info["scale_y"],
-                    scale_info["scale_z"]
-                )
-                
-                # Get PartNet ID for this object
-                obj_id = self._get_partnet_id(obj_name)
-                if not obj_id:
-                    logger.warning(f"Could not find PartNet ID for {obj_name}, skipping scale update")
-                    continue
-                
-                # Get image info if available
-                image_info = getattr(obj_state, 'image_info', None)
-                
-                # Update URDF and mesh files
-                if partnet_manager.update_object_scale(obj_id, scale_factors, image_info=image_info):
-                    # Update object state with new dimensions
-                    new_bbox = (
-                        old_bbox[0] * scale_factors[0],
-                        old_bbox[1] * scale_factors[1],
-                        old_bbox[2] * scale_factors[2]
-                    )
-                    
-                    # Check if scale actually changed
-                    if new_bbox != old_bbox:
-                        scales_changed = True
-                        logger.info(f"\nScaling {obj_name}:")
-                        logger.info(f"  Reasoning: {scale_info['reasoning']}")
-                        logger.info(f"  Old dimensions: {[f'{x:.3f}' for x in old_bbox]}")
-                        logger.info(f"  New dimensions: {[f'{x:.3f}' for x in new_bbox]}")
-                        logger.info(f"  Scale factors: x={scale_factors[0]:.3f}, y={scale_factors[1]:.3f}, z={scale_factors[2]:.3f}")
-                        
-                        if image_info:
-                            logger.info("  Scale validated against image information")
-                            if image_info.get('depth'):
-                                logger.info("  Depth information used for scaling")
-                        
-                        obj_state.bbox = new_bbox
-                else:
-                    logger.error(f"Failed to update scale for {obj_name}")
-        
-        # Clean up by restoring original files
-        logger.info("\nRestoring original files...")
-        if not partnet_manager.cleanup_scaled_files():
-            logger.warning("Some files could not be restored to original state")
-        
-        if scales_changed:
-            logger.info("\nScale changes were temporarily applied and then reverted")
-        else:
-            logger.info("\nNo scale changes were needed")
-        
-        return scales_changed
-
-    def _get_scale_suggestions(self, context: List[Dict]) -> Dict:
-        """Get scaling suggestions from LLM."""
-        try:
-            # Create prompt for LLM
-            prompt = f"""Given a scene with objects and their current dimensions, analyze the provided images and suggest scaling adjustments to make the scene realistic.
-
-Each object has:
-- Current dimensions (width, length, height) in meters
-- Parent-child relationships
-- Image information (if available):
-  - 2D bounding box coordinates
-  - Scene images showing the object
-  - Depth information (if available)
-
-Current scene objects:
-{json.dumps(context, indent=2)}
-
-For each object that has image information:
-1. Use the 2D bounding box and image dimensions to validate object size
-2. If depth information is available, use it to better estimate real-world scale
-3. Consider the object's relative size in the image compared to other objects
-4. Check if the current dimensions match what's visible in the image
-
-For all objects:
-1. Verify if the size is realistic for its category
-2. Check if the size is appropriate relative to its parent
-3. Ensure it can accommodate its children (if any)
-4. Maintain proper proportions with sibling objects
-
-Return a JSON object with scaling factors for each object in this format:
-{{
-    "object_name": {{
-        "scale_x": float,  # Multiply current width by this factor
-        "scale_y": float,  # Multiply current length by this factor
-        "scale_z": float,  # Multiply current height by this factor
-        "reasoning": "string"  # Explanation for the scaling decision, including image-based validation
-    }},
-    ...
-}}
-
-Consider both the image evidence and common sense object sizes for the simulation.
-Focus on making the scene physically plausible and visually consistent with the provided images.
-Explain your reasoning for each scaling decision, especially when using image information.
-
-IMPORTANT: Only return the JSON object with no additional text."""
-
-            # Call LLM
-            response = self.llm_client.chat.completions.create(
-                model="gpt-4o",
-                messages=[
-                    {
-                        "role": "system",
-                        "content": "You are a computer vision expert specializing in 3D scene understanding and physical object relationships. Your task is to analyze object dimensions using both image evidence and common sense knowledge to suggest realistic scaling adjustments."
-                    },
-                    {
-                        "role": "user",
-                        "content": prompt
-                    }
-                ],
-                response_format={"type": "json_object"}
-            )
-
-            # Parse response
-            scaling_suggestions = json.loads(response.choices[0].message.content)
-            
-            # Validate response format
-            for obj_name, scale_info in scaling_suggestions.items():
-                required_keys = {"scale_x", "scale_y", "scale_z", "reasoning"}
-                if not all(key in scale_info for key in required_keys):
-                    raise ValueError(f"Invalid scale info format for {obj_name}")
-                if not all(isinstance(scale_info[f"scale_{axis}"], (int, float)) 
-                          for axis in ['x', 'y', 'z']):
-                    raise ValueError(f"Invalid scale factors for {obj_name}")
-
-            return scaling_suggestions
-
-        except Exception as e:
-            logger.error(f"Failed to get scaling suggestions from LLM: {str(e)}")
-            logger.error(f"Traceback: {traceback.format_exc()}")
-            return {}
-
-    def _reinitialize_placement_grids(self):
-        """Reinitialize placement grids for all objects after scale changes."""
-        for obj_name, obj_state in self.objects.items():
-            if obj_state.children_on:
-                # Reset existing grid
-                obj_state.available_surface = None
-                obj_state.grid_resolution = None
-                
-                # Calculate new grid resolution based on updated child sizes
-                min_child_dim = float('inf')
-                for child_name in obj_state.children_on:
-                    if child_name in self.objects:
-                        child_state = self.objects[child_name]
-                        min_dim = min(child_state.bbox[0], child_state.bbox[1])
-                        min_child_dim = min(min_child_dim, min_dim)
-                
-                # Use grid resolution of 1/10th of smallest child or 0.1m, whichever is smaller
-                resolution = min(0.1, min_child_dim / 10)
-                obj_state.init_grid(resolution)
-                logger.info(f"Reinitialized grid for {obj_name} with resolution {resolution:.3f}m")
-                logger.info(f"  - Parent surface: {obj_state.bbox[0]:.3f}m × {obj_state.bbox[1]:.3f}m")
-                logger.info(f"  - Grid size: {len(obj_state.available_surface)}×{len(obj_state.available_surface)} cells")
-
-    def _scale_mesh_file(self, mesh_path: str, scale_factors: Tuple[float, float, float], image_info: Optional[Dict] = None):
-        """Scale mesh using trimesh for accurate transformations and image-based validation.
-        
-        Args:
-            mesh_path: Path to the mesh file
-            scale_factors: (scale_x, scale_y, scale_z) scaling factors
-            image_info: Optional dict containing image paths, 2D bounding boxes, and depth info
-        """
-        try:
-            import trimesh
-            
-            # Backup original mesh if not already backed up
-            backup_path = mesh_path + ".backup"
-            if not os.path.exists(backup_path):
-                import shutil
-                shutil.copy2(mesh_path, backup_path)
-            
-            # Load mesh
-            mesh = trimesh.load(mesh_path)
-            
-            if not isinstance(mesh, trimesh.Trimesh):
-                logger.warning(f"Could not load {mesh_path} as a trimesh object")
-                return False
-            
-            # Get original mesh dimensions
-            original_dims = mesh.extents
-            logger.info(f"Original mesh dimensions: {original_dims}")
-            
-            # If we have image info, validate scale factors
-            if image_info and image_info['bbox_2d'] and image_info['paths']:
-                try:
-                    # Load first image for reference
-                    img = cv2.imread(image_info['paths'][0])
-                    if img is not None:
-                        img_height, img_width = img.shape[:2]
-                        bbox = image_info['bbox_2d']
-                        
-                        # Calculate relative size in image
-                        bbox_width = bbox[2] - bbox[0]
-                        bbox_height = bbox[3] - bbox[1]
-                        relative_width = bbox_width / img_width
-                        relative_height = bbox_height / img_height
-                        
-                        # Use depth information if available
-                        if image_info['depth'] is not None:
-                            depth = image_info['depth']
-                            # Adjust scale factors based on depth
-                            depth_scale = 1.0 / depth if depth > 0 else 1.0
-                            scale_factors = tuple(s * depth_scale for s in scale_factors)
-                            logger.info(f"Adjusted scale factors using depth: {scale_factors}")
-                        
-                        # Calculate expected dimensions based on image
-                        expected_width = relative_width * scale_factors[0]
-                        expected_height = relative_height * scale_factors[1]
-                        
-                        # Compare with mesh dimensions and adjust if needed
-                        width_ratio = expected_width / original_dims[0]
-                        height_ratio = expected_height / original_dims[1]
-                        
-                        if abs(1 - width_ratio) > 0.2 or abs(1 - height_ratio) > 0.2:
-                            logger.warning(f"Large discrepancy between image and mesh dimensions")
-                            logger.warning(f"Image-based dimensions: {expected_width:.3f} x {expected_height:.3f}")
-                            logger.warning(f"Mesh dimensions: {original_dims[0]:.3f} x {original_dims[1]:.3f}")
-                            
-                            # Adjust scale factors to better match image
-                            scale_factors = (
-                                scale_factors[0] * width_ratio,
-                                scale_factors[1] * height_ratio,
-                                scale_factors[2]  # Keep Z scale as is
-                            )
-                            logger.info(f"Adjusted scale factors to match image: {scale_factors}")
-                except Exception as e:
-                    logger.warning(f"Error during image-based scale validation: {str(e)}")
-                    logger.warning("Proceeding with original scale factors")
-            
-            # Create scaling matrix
-            scale_matrix = np.eye(4)
-            scale_matrix[0, 0] = scale_factors[0]
-            scale_matrix[1, 1] = scale_factors[1]
-            scale_matrix[2, 2] = scale_factors[2]
-            
-            # Apply scaling transformation
-            mesh.apply_transform(scale_matrix)
-            
-            # Export scaled mesh
-            try:
-                export_options = {}
-                if mesh_path.lower().endswith('.obj'):
-                    # Ensure proper OBJ export settings
-                    export_options = {
-                        'vertex_normal': True,
-                        'include_texture': True,
-                        'include_materials': True,
-                        'resolver': trimesh.resolvers.FilePathResolver()
-                    }
-                
-                mesh.export(mesh_path, **export_options)
-                logger.info(f"Successfully scaled and saved mesh: {mesh_path}")
-                logger.info(f"  Scale factors: x={scale_factors[0]:.3f}, y={scale_factors[1]:.3f}, z={scale_factors[2]:.3f}")
-                logger.info(f"  Original dimensions: {original_dims}")
-                logger.info(f"  New dimensions: {mesh.extents}")
-                logger.info(f"  Vertices: {len(mesh.vertices)}")
-                logger.info(f"  Faces: {len(mesh.faces)}")
-                return True
-                
-            except Exception as e:
-                logger.error(f"Failed to export scaled mesh {mesh_path}: {str(e)}")
-                # Try to restore from backup
-                if os.path.exists(backup_path):
-                    import shutil
-                    shutil.copy2(backup_path, mesh_path)
-                return False
-                
-        except Exception as e:
-            logger.error(f"Error scaling mesh {mesh_path}: {str(e)}")
-            logger.error(f"Traceback: {traceback.format_exc()}")
-            return False
-
-    def _optimize_object_selection(self, hierarchy: Dict[str, Dict[str, Set[str]]]) -> bool:
-        """Iteratively optimize object selection by finding better-fitting PartNet objects.
-        
-        This method:
-        1. Starts with root objects (furniture)
-        2. For each object, finds all compatible PartNet objects
-        3. Evaluates each candidate based on its ability to accommodate children
-        4. Updates selections if better matches are found
-        
-        Returns:
-            bool: True if any objects were updated
-        """
-        logger.info("\n=== Starting Object Selection Optimization ===")
-        
-        # Track if any changes were made
-        changes_made = False
-        
-        # Process objects in hierarchy order (bottom-up)
-        objects_by_level = defaultdict(list)
-        for obj_name in hierarchy:
-            if obj_name == "ground":
+            if obj_state.position is not None:
+                used_positions.add((obj_state.position[0], obj_state.position[1]))
                 continue
-            level = len(hierarchy[obj_name]["children"])
-            objects_by_level[level].append(obj_name)
-        
-        # Initialize PartNet manager
-        dataset_path = Path(project_root) / "src" / "datasets" / "partnet-mobility-v0"
-        partnet_manager = PartNetManager(str(dataset_path))
-        
-        # Process levels from leaves to root
-        for level in sorted(objects_by_level.keys()):
-            objects = objects_by_level[level]
-            logger.info(f"\nProcessing objects at level {level} (children count)")
+                
+            # Start with default position
+            x, y = 0.0, 0.0
+            z = obj_state.bbox[2]/2  # Place at half height
             
-            for obj_name in objects:
-                obj_state = self.objects[obj_name]
-                base_name = obj_name.split('_')[0]
+            # If object has a parent, offset from parent's position
+            if obj_state.parent and self.objects[obj_state.parent].position:
+                parent = self.objects[obj_state.parent]
+                x = parent.position[0]
+                y = parent.position[1]
+                z = parent.position[2] + parent.bbox[2]/2 + obj_state.bbox[2]/2
+            
+            # Find unused position
+            while (x, y) in used_positions:
+                x += grid_size
+                if x > 5.0:  # Max 5m in x direction
+                    x = 0.0
+                    y += grid_size
+            
+            obj_state.position = (x, y, z)
+            used_positions.add((x, y))
+            logger.info(f"Assigned default position for {obj_name}: {[f'{p:.3f}' for p in obj_state.position]}")
+
+    def _try_alternative_placements(self, parent: ObjectState, child: ObjectState,
+                                  semantic_relations: List[SemanticRelation],
+                                  placed_relatives: List[str]) -> bool:
+        """Try alternative placements for an object when standard placement fails."""
+        logger.info(f"Trying alternative placements for {child.name}...")
+        
+        # Try rotating the object
+        original_bbox = child.bbox
+        rotated_bbox = (original_bbox[1], original_bbox[0], original_bbox[2])  # Swap width and length
+        child.bbox = rotated_bbox
+        
+        # Try placement with rotated dimensions
+        position = self._find_stable_position(
+            parent, child,
+            semantic_relations=semantic_relations,
+            placed_relatives=placed_relatives
+        )
+        
+        if position:
+            child.position = position
+            self._update_occupancy_grid(parent, child)
+            logger.info(f"Found stable position after rotation: {[f'{x:.3f}' for x in position]}")
+            return True
+            
+        # Restore original dimensions if rotation didn't help
+        child.bbox = original_bbox
+        
+        # Try different z-levels if applicable
+        if semantic_relations:
+            for rel in semantic_relations:
+                if rel.relation_type == "above" and rel.target in self.objects:
+                    target = self.objects[rel.target]
+                    if target.position:
+                        # Try placing at different heights above target
+                        clearances = [0.05, 0.1, 0.2]  # Try 5cm, 10cm, 20cm clearances
+                        for clearance in clearances:
+                            z = target.position[2] + target.bbox[2]/2 + clearance + child.bbox[2]/2
+                            test_position = (target.position[0], target.position[1], z)
+                            
+                            # Verify position doesn't collide with other objects
+                            if not self._check_collision(child, test_position):
+                                child.position = test_position
+                                self._update_occupancy_grid(parent, child)
+                                logger.info(f"Found stable position at height {clearance}m: {[f'{x:.3f}' for x in test_position]}")
+                                return True
+        
+        return False
+
+    def _check_collision(self, obj: ObjectState, position: Tuple[float, float, float]) -> bool:
+        """Check if an object at the given position would collide with any other objects."""
+        for other_name, other_obj in self.objects.items():
+            if other_name == obj.name or not other_obj.position:
+                continue
                 
-                logger.info(f"\n📦 Analyzing {obj_name}:")
-                logger.info(f"  Current dimensions: {[f'{x:.3f}' for x in obj_state.bbox]}")
+            # Simple box collision check
+            if (abs(position[0] - other_obj.position[0]) < (obj.bbox[0] + other_obj.bbox[0])/2 and
+                abs(position[1] - other_obj.position[1]) < (obj.bbox[1] + other_obj.bbox[1])/2 and
+                abs(position[2] - other_obj.position[2]) < (obj.bbox[2] + other_obj.bbox[2])/2):
+                return True
+        
+        return False
+
+    def plan_object_placement(self, objects, relations):
+        """Plan object placement with enhanced logging and visualization."""
+        # Log initial state
+        self.logger.info("=== Initial Object State Analysis ===")
+        for obj in objects:
+            self.logger.info(f"\nAnalyzing {obj.name}:")
+            self.logger.info(f"  Initial position: {obj.position if obj.position else 'Not set'}")
+            self.logger.info(f"  Initial dimensions: {obj.dimensions}")
+            self.logger.info(f"  Parent: {obj.parent.name if obj.parent else 'None'}")
+            self.logger.info(f"  Children: {[child.name for child in obj.children]}")
+            
+            # Check for potential issues
+            if obj.parent:
+                parent_area = float(obj.parent.dimensions[0]) * float(obj.parent.dimensions[1])
+                obj_area = float(obj.dimensions[0]) * float(obj.dimensions[1])
+                if obj_area > parent_area:
+                    self.logger.warning(f"  ⚠️ Object area ({obj_area:.2f}) exceeds parent area ({parent_area:.2f})")
                 
-                # Calculate required space for children
-                if obj_state.children_on:
-                    total_child_area = sum(
-                        self.objects[child].bbox[0] * self.objects[child].bbox[1]
-                        for child in obj_state.children_on
-                    )
-                    max_child_height = max(
-                        self.objects[child].bbox[2]
-                        for child in obj_state.children_on
-                    )
-                    logger.info(f"  Required child area: {total_child_area:.3f}m²")
-                    logger.info(f"  Max child height: {max_child_height:.3f}m")
+                # Check center of mass
+                if obj.position:
+                    parent_bounds = {
+                        'x': [-float(obj.parent.dimensions[0])/2, float(obj.parent.dimensions[0])/2],
+                        'y': [-float(obj.parent.dimensions[1])/2, float(obj.parent.dimensions[1])/2],
+                        'z': [0, float(obj.parent.dimensions[2])]
+                    }
+                    
+                    pos = [float(p) for p in obj.position]
+                    if (pos[0] < parent_bounds['x'][0] or pos[0] > parent_bounds['x'][1] or
+                        pos[1] < parent_bounds['y'][0] or pos[1] > parent_bounds['y'][1] or
+                        pos[2] < parent_bounds['z'][0] or pos[2] > parent_bounds['z'][1]):
+                        self.logger.warning(f"  ⚠️ Object position {pos} outside parent bounds {parent_bounds}")
+        
+        # Generate visualization before placement
+        pre_placement_objects = [
+            {
+                'name': obj.name,
+                'position': obj.position if obj.position else ['0', '0', '0'],
+                'dimensions': obj.dimensions
+            }
+            for obj in objects
+        ]
+        visualize_scene_plan(pre_placement_objects, "pre_placement.png")
+        
+        # ... rest of placement logic ...
+        
+        # Log placement attempts
+        self.logger.info("\n=== Placement Attempts ===")
+        for obj in objects:
+            if not obj.position:
+                self.logger.warning(f"\nFailed to place {obj.name}:")
+                if obj.parent:
+                    self.logger.warning(f"  Parent surface area: {float(obj.parent.dimensions[0])*float(obj.parent.dimensions[1]):.2f}")
+                    self.logger.warning(f"  Required area: {float(obj.dimensions[0])*float(obj.dimensions[1]):.2f}")
+                    self.logger.warning(f"  Available positions tried: {self.get_available_positions(obj)}")
                 else:
-                    total_child_area = 0
-                    max_child_height = 0
+                    self.logger.warning("  No parent object")
+            else:
+                self.logger.info(f"\nSuccessfully placed {obj.name}:")
+                self.logger.info(f"  Final position: {obj.position}")
+                self.logger.info(f"  Stability check: {self.check_stability(obj)}")
+        
+        # Generate visualization after placement
+        post_placement_objects = [
+            {
+                'name': obj.name,
+                'position': obj.position if obj.position else ['0', '0', '0'],
+                'dimensions': obj.dimensions
+            }
+            for obj in objects
+        ]
+        visualize_scene_plan(post_placement_objects, "post_placement.png")
+        
+        return objects
+        
+    def get_available_positions(self, obj):
+        """Get list of available positions that were considered."""
+        # This is a placeholder - implement actual position tracking
+        return ["Implement position tracking"]
+        
+    def check_stability(self, obj):
+        """Check if object placement is stable."""
+        if not obj.position or not obj.parent:
+            return False
+            
+        # Convert positions and dimensions to float
+        pos = [float(p) for p in obj.position]
+        dims = [float(d) for d in obj.dimensions]
+        parent_dims = [float(d) for d in obj.parent.dimensions]
+        
+        # Check if object's base is fully supported
+        obj_min_x = pos[0] - dims[0]/2
+        obj_max_x = pos[0] + dims[0]/2
+        obj_min_y = pos[1] - dims[1]/2
+        obj_max_y = pos[1] + dims[1]/2
+        
+        parent_min_x = -parent_dims[0]/2
+        parent_max_x = parent_dims[0]/2
+        parent_min_y = -parent_dims[1]/2
+        parent_max_y = parent_dims[1]/2
+        
+        return (obj_min_x >= parent_min_x and obj_max_x <= parent_max_x and
+                obj_min_y >= parent_min_y and obj_max_y <= parent_max_y)
+
+    def quick_place_objects(self, relations: List[SpatialRelation], object_states: Dict[str, ObjectState]) -> Tuple[List[str], Dict[str, ObjectState]]:
+        """Quick object placement based purely on spatial relations with error handling."""
+        logger.info(f"\n{'='*80}")
+        logger.info("Starting Quick Object Placement")
+        logger.info(f"{'='*80}")
+        logger.info(f"Input: {len(relations)} relations, {len(object_states)} objects")
+        
+        try:
+            self.objects = object_states.copy()  # Make a copy to avoid modifying original
+        except Exception as e:
+            logger.error(f"Error copying object states: {e}")
+            self.objects = object_states
+        
+        # 1. Process and log initial object states
+        logger.info("\n=== 1. Initial Object States ===")
+        for name, state in self.objects.items():
+            try:
+                logger.info(f"\n📦 {name}:")
+                logger.info(f"   Original dimensions: {state.bbox if state.bbox else 'Not set'}")
+                logger.info(f"   URDF: {state.urdf_path if hasattr(state, 'urdf_path') else 'Not set'}")
+            except Exception as e:
+                logger.error(f"Error logging object {name}: {e}")
+        
+        # 2. Update object dimensions using LLM with fallback
+        logger.info("\n=== 2. Updating Object Dimensions ===")
+        try:
+            self._update_object_dimensions_llm()
+        except Exception as e:
+            logger.error(f"Error in LLM dimension update: {e}")
+            self._apply_default_dimensions()
+        
+        # Validate dimensions after update
+        self._validate_object_dimensions()
+        
+        # 3. Process spatial relations to determine positions
+        logger.info("\n=== 3. Processing Spatial Relations ===")
+        relation_map = defaultdict(list)
+        try:
+            for rel in relations:
+                relation_map[rel.source].append(rel)
+                logger.info(f"Relation: {rel.source} {rel.relation_type} {rel.target}")
+        except Exception as e:
+            logger.error(f"Error processing relations: {e}")
+        
+        # 4. Place objects based on relations
+        logger.info("\n=== 4. Placing Objects ===")
+        placed_objects = set()
+        placement_attempts = 0
+        max_attempts = len(self.objects) * 2  # Prevent infinite loops
+        
+        try:
+            # First place root objects with spacing
+            root_objects = self._find_root_objects(relations)
+            logger.info(f"\nRoot objects: {root_objects}")
+            
+            spacing = 1.0  # 1 meter spacing between root objects
+            current_x = 0.0
+            
+            for obj_name in root_objects:
+                if obj_name in self.objects:
+                    try:
+                        obj = self.objects[obj_name]
+                        # Place root objects along X axis with spacing
+                        obj.position = (current_x, 0.0, obj.bbox[2]/2)
+                        current_x += obj.bbox[0] + spacing
+                        placed_objects.add(obj_name)
+                        logger.info(f"Placed root object {obj_name} at {obj.position}")
+                    except Exception as e:
+                        logger.error(f"Error placing root object {obj_name}: {e}")
+                        # Use default position
+                        self.objects[obj_name].position = (current_x, 0.0, 0.5)
+                        current_x += spacing
+                        placed_objects.add(obj_name)
+            
+            # Then place remaining objects based on relations
+            while len(placed_objects) < len(self.objects) and placement_attempts < max_attempts:
+                placement_attempts += 1
+                initial_placed_count = len(placed_objects)
                 
-                # Get all possible PartNet IDs for this object type
-                possible_ids = self.object_id_map.get(base_name, [])
-                if not possible_ids:
-                    logger.warning(f"  No PartNet IDs found for type: {base_name}")
-                    continue
-                
-                logger.info(f"  Found {len(possible_ids)} potential matches")
-                
-                # Evaluate each candidate
-                best_match = None
-                best_score = float('-inf')
-                
-                for obj_id in possible_ids:
-                    # Get dimensions for this candidate
-                    dims = self._get_mesh_dimensions_for_id(obj_id)
-                    if not dims:
+                for obj_name, obj_state in self.objects.items():
+                    if obj_name in placed_objects:
                         continue
                     
-                    # Calculate score based on:
-                    # 1. Surface area relative to children's needs
-                    # 2. Height appropriateness
-                    # 3. Overall proportions
-                    surface_area = dims[0] * dims[1]
-                    area_ratio = surface_area / total_child_area if total_child_area > 0 else 1.0
-                    height_ratio = dims[2] / max_child_height if max_child_height > 0 else 1.0
-                    
-                    # Penalize if too small or too large
-                    if area_ratio < 1.0:  # Too small
-                        area_score = -10
-                    elif area_ratio > 3.0:  # Too large
-                        area_score = -5
-                    else:
-                        area_score = 10 - abs(2 - area_ratio) * 5  # Best score when area_ratio is around 2
-                    
-                    if height_ratio < 0.1:  # Too short
-                        height_score = -10
-                    elif height_ratio > 5.0:  # Too tall
-                        height_score = -5
-                    else:
-                        height_score = 10 - abs(1 - height_ratio) * 5  # Best score when height_ratio is around 1
-                    
-                    # Calculate proportion score (prefer reasonable width/length ratios)
-                    aspect_ratio = max(dims[0]/dims[1], dims[1]/dims[0])
-                    proportion_score = 10 - min(abs(aspect_ratio - 1) * 2, 10)  # Penalize extreme proportions
-                    
-                    # Combine scores
-                    total_score = area_score + height_score + proportion_score
-                    
-                    logger.debug(f"  Evaluating ID {obj_id}:")
-                    logger.debug(f"    Dimensions: {[f'{x:.3f}' for x in dims]}")
-                    logger.debug(f"    Area ratio: {area_ratio:.2f} (score: {area_score:.1f})")
-                    logger.debug(f"    Height ratio: {height_ratio:.2f} (score: {height_score:.1f})")
-                    logger.debug(f"    Proportion score: {proportion_score:.1f}")
-                    logger.debug(f"    Total score: {total_score:.1f}")
-                    
-                    if total_score > best_score:
-                        best_score = total_score
-                        best_match = (obj_id, dims)
+                    try:
+                        # Check if we can place this object
+                        obj_relations = relation_map[obj_name]
+                        can_place = all(rel.target in placed_objects for rel in obj_relations)
+                        
+                        if can_place:
+                            position = self._calculate_position_from_relations(obj_name, obj_state, obj_relations)
+                            if position:
+                                obj_state.position = position
+                                placed_objects.add(obj_name)
+                                logger.info(f"Placed object {obj_name} at {position}")
+                            else:
+                                logger.warning(f"Could not calculate position for {obj_name}")
+                    except Exception as e:
+                        logger.error(f"Error placing object {obj_name}: {e}")
+                        # Use default position if calculation fails
+                        obj_state.position = (len(placed_objects) * spacing, 0.0, 0.5)
+                        placed_objects.add(obj_name)
                 
-                # Update object if better match found
-                if best_match and best_match[1] != obj_state.bbox:
-                    old_dims = obj_state.bbox
-                    new_dims = best_match[1]
-                    obj_state.bbox = new_dims
-                    changes_made = True
-                    
-                    logger.info(f"  ✨ Found better match (ID: {best_match[0]}):")
-                    logger.info(f"    Old dimensions: {[f'{x:.3f}' for x in old_dims]}")
-                    logger.info(f"    New dimensions: {[f'{x:.3f}' for x in new_dims]}")
-                    logger.info(f"    Score: {best_score:.1f}")
-                else:
-                    logger.info("  ✓ Current selection is optimal")
+                # Check if we made progress
+                if len(placed_objects) == initial_placed_count:
+                    logger.warning("No progress made in placement iteration")
+                    # Place remaining objects with default positions
+                    self._place_remaining_objects(placed_objects, spacing)
+                    break
         
-        if changes_made:
-            logger.info("\n🔄 Object selections were optimized")
-        else:
-            logger.info("\n✓ No optimization needed")
-        
-        return changes_made
-
-    def _get_mesh_dimensions_for_id(self, obj_id: str) -> Optional[Tuple[float, float, float]]:
-        """Get mesh dimensions for a specific PartNet ID."""
-        try:
-            dataset_path = Path(project_root) / "src" / "datasets" / "partnet-mobility-v0" / "dataset"
-            obj_dir = dataset_path / obj_id
-            
-            if not obj_dir.exists():
-                return None
-            
-            # Load and process mesh files
-            mesh_files = list((obj_dir / "textured_objs").glob("*.obj"))
-            if not mesh_files:
-                return None
-            
-            # Use trimesh for accurate bounds
-            import trimesh
-            vertices = []
-            
-            for mesh_file in mesh_files:
-                try:
-                    mesh = trimesh.load(mesh_file)
-                    if isinstance(mesh, trimesh.Trimesh):
-                        vertices.extend(mesh.vertices)
-                except Exception as e:
-                    logger.debug(f"Error loading mesh {mesh_file}: {str(e)}")
-                    continue
-            
-            if not vertices:
-                return None
-            
-            # Calculate bounds
-            vertices = np.array(vertices)
-            mins = vertices.min(axis=0)
-            maxs = vertices.max(axis=0)
-            
-            # Calculate dimensions
-            dims = maxs - mins
-            
-            # Add small padding for physics stability
-            padding = max(0.01, min(dims) * 0.05)  # 1cm or 5% of smallest dimension
-            dims += padding
-            
-            return tuple(abs(d) for d in dims)
-            
         except Exception as e:
-            logger.debug(f"Error getting dimensions for ID {obj_id}: {str(e)}")
-            return None
+            logger.error(f"Error in main placement loop: {e}")
+            # Place any remaining objects
+            self._place_remaining_objects(placed_objects, spacing=1.0)
+        
+        # 5. Generate visualization
+        logger.info("\n=== 5. Generating Visualization ===")
+        try:
+            final_objects = [
+                {
+                    'name': name,
+                    'position': [float(p) for p in state.position] if state.position else [0, 0, 0],
+                    'dimensions': [float(d) for d in state.bbox] if state.bbox else [0.1, 0.1, 0.1]
+                }
+                for name, state in self.objects.items()
+            ]
+            visualize_scene_plan(final_objects, "quick_placement_scene.png")
+            logger.info("\nGenerated scene visualization: quick_placement_scene.png")
+        except Exception as e:
+            logger.error(f"Error generating visualization: {e}")
+        
+        # 6. Log final configuration
+        logger.info("\n=== Final Object Configurations ===")
+        for obj_name, obj_state in self.objects.items():
+            try:
+                logger.info(f"\n📦 {obj_name}:")
+                logger.info(f"   Final dimensions (w,l,h): {[f'{x:.3f}' for x in obj_state.bbox]}")
+                logger.info(f"   Final position (x,y,z): {[f'{x:.3f}' for x in obj_state.position]}")
+            except Exception as e:
+                logger.error(f"Error logging final state for {obj_name}: {e}")
+        
+        logger.info(f"\n{'='*80}\n")
+        return list(placed_objects), self.objects
 
-def parse_llm_output(output_text: str) -> Tuple[List[str], List[SemanticRelation]]:
-    """Parse LLM output into a scene graph structure."""
-    try:
-        sections = output_text.split("Relationships:")
-        objects_section = sections[0].split("Objects:")[1].strip()
-        objects = [obj.strip() for obj in objects_section.split("\n") if obj.strip()]
+    def _apply_default_dimensions(self):
+        """Apply default dimensions if LLM update fails."""
+        default_dims = {
+            'Table': (1.2, 0.8, 0.75),    # Standard desk size
+            'Monitor': (0.6, 0.1, 0.4),   # Standard monitor
+            'Keyboard': (0.45, 0.15, 0.03), # Standard keyboard
+            'Mouse': (0.12, 0.07, 0.04),   # Standard mouse
+            'Chair': (0.6, 0.6, 1.0),      # Standard chair
+            'default': (0.5, 0.5, 0.5)     # Default for unknown objects
+        }
         
-        logger.info(f"Parsed {len(objects)} objects from LLM output")
+        for name, state in self.objects.items():
+            try:
+                obj_type = name.split('_')[0]
+                state.bbox = default_dims.get(obj_type, default_dims['default'])
+                logger.info(f"Set {name} dimensions to: {state.bbox}")
+            except Exception as e:
+                logger.error(f"Error setting dimensions for {name}: {e}")
+                state.bbox = default_dims['default']
+
+    def _validate_object_dimensions(self):
+        """Validate and fix object dimensions if necessary."""
+        min_size = 0.01  # 1cm minimum
+        max_size = 5.0   # 5m maximum
         
-        # Create directed graph for relationship analysis
-        G = nx.DiGraph()
-        
-        # Add all objects as nodes
-        for obj in objects:
-            G.add_node(obj)
-        
-        # Track different types of relationships
-        support_relations = []  # on, above relationships
-        spatial_relations = []  # next_to, aligned_with, etc.
-        
-        # Parse and categorize relationships
-        edge_colors = []  # Track edge colors for visualization
-        edge_labels = {}  # Track edge labels for visualization
-        
-        for line in sections[1].strip().split("\n"):
-            if not line.strip():
-                continue
+        for name, state in self.objects.items():
+            try:
+                if not hasattr(state, 'bbox') or not state.bbox:
+                    logger.warning(f"Missing dimensions for {name}, applying defaults")
+                    state.bbox = (0.5, 0.5, 0.5)
+                    continue
                 
-            source, relation_type, target, confidence = [x.strip() for x in line.split("|")]
-            confidence = float(confidence)
+                # Ensure dimensions are within reasonable bounds
+                new_bbox = []
+                for dim in state.bbox:
+                    try:
+                        dim_float = float(dim)
+                        if dim_float < min_size:
+                            dim_float = min_size
+                        elif dim_float > max_size:
+                            dim_float = max_size
+                        new_bbox.append(dim_float)
+                    except (ValueError, TypeError):
+                        new_bbox.append(0.5)  # Default if conversion fails
+                
+                state.bbox = tuple(new_bbox)
+                logger.info(f"Validated dimensions for {name}: {state.bbox}")
+            except Exception as e:
+                logger.error(f"Error validating dimensions for {name}: {e}")
+                state.bbox = (0.5, 0.5, 0.5)
+
+    def _place_remaining_objects(self, placed_objects: Set[str], spacing: float = 1.0):
+        """Place any remaining objects that couldn't be placed through relations."""
+        current_x = len(placed_objects) * spacing
+        
+        for obj_name, obj_state in self.objects.items():
+            if obj_name not in placed_objects:
+                try:
+                    obj_state.position = (current_x, 0.0, obj_state.bbox[2]/2)
+                    current_x += obj_state.bbox[0] + spacing
+                    placed_objects.add(obj_name)
+                    logger.info(f"Placed remaining object {obj_name} at {obj_state.position}")
+                except Exception as e:
+                    logger.error(f"Error placing remaining object {obj_name}: {e}")
+                    obj_state.position = (current_x, 0.0, 0.5)
+                    current_x += spacing
+                    placed_objects.add(obj_name)
+
+    def _update_object_dimensions_llm(self):
+        """Update object dimensions using LLM suggestions."""
+        try:
+            # Prepare object descriptions for LLM
+            object_descriptions = []
+            for name, state in self.objects.items():
+                obj_type = name.split('_')[0]
+                object_descriptions.append(f"{name} (type: {obj_type})")
             
-            # Create semantic relation
-            relation = SemanticRelation(
-                source=source,
-                relation=relation_type,
-                target=target,
-                confidence=confidence
+            # Create LLM prompt
+            prompt = f"""Given these objects: {', '.join(object_descriptions)}
+            Suggest realistic dimensions (width, length, height in meters) for each object.
+            Consider typical furniture and computer peripheral sizes.
+            Format response as JSON with object names as keys and [width, length, height] as values."""
+            
+            # Get LLM response
+            response = self.llm_client.chat.completions.create(
+                model="gpt-4",
+                messages=[{"role": "user", "content": prompt}]
             )
             
-            # Add edge to graph with attributes
-            G.add_edge(source, target, 
-                      relation_type=relation_type,
-                      confidence=confidence)
+            # Parse dimensions from response
+            try:
+                dimensions = json.loads(response.choices[0].message.content)
+                for obj_name, dims in dimensions.items():
+                    if obj_name in self.objects:
+                        self.objects[obj_name].bbox = tuple(dims)
+                        logger.info(f"Updated {obj_name} dimensions to: {dims}")
+            except json.JSONDecodeError:
+                logger.error("Failed to parse LLM response as JSON")
+                
+        except Exception as e:
+            logger.error(f"Error updating dimensions with LLM: {str(e)}")
+
+    def _find_root_objects(self, relations: List[SpatialRelation]) -> Set[str]:
+        """Find objects that don't have any 'above' or 'on' relations to other objects."""
+        dependent_objects = set()
+        for rel in relations:
+            if rel.relation_type in ['on', 'above']:
+                dependent_objects.add(rel.source)
+        
+        return set(self.objects.keys()) - dependent_objects
+
+    def _calculate_position_from_relations(self, obj_name: str, obj_state: ObjectState, 
+                                        relations: List[SpatialRelation]) -> Optional[Tuple[float, float, float]]:
+        """Calculate object position based on its spatial relations."""
+        if not relations:
+            return None
             
-            # Track edge visualization properties
-            if relation_type in ["on", "above"]:
-                support_relations.append(relation)
-                edge_colors.append('red')  # Support relationships in red
-            else:
-                spatial_relations.append(relation)
-                edge_colors.append('blue')  # Spatial relationships in blue
+        # Get reference object (prefer 'on' relations)
+        ref_relation = next((rel for rel in relations if rel.relation_type == 'on'), relations[0])
+        ref_object = self.objects[ref_relation.target]
+        
+        # Base position calculations on relation type
+        if ref_relation.relation_type == 'on':
+            # Place directly on top of reference object
+            x = ref_object.position[0]
+            y = ref_object.position[1]
+            z = ref_object.position[2] + ref_object.bbox[2]/2 + obj_state.bbox[2]/2
             
-            edge_labels[(source, target)] = f"{relation_type}\n({confidence:.2f})"
+        elif ref_relation.relation_type == 'next_to':
+            # Place beside reference object
+            x = ref_object.position[0] + ref_object.bbox[0]/2 + obj_state.bbox[0]/2
+            y = ref_object.position[1]
+            z = ref_object.position[2]
+            
+        elif ref_relation.relation_type == 'in_front_of':
+            # Place in front of reference object
+            x = ref_object.position[0]
+            y = ref_object.position[1] + ref_object.bbox[1]/2 + obj_state.bbox[1]/2
+            z = ref_object.position[2]
+            
+        else:  # Default to placing near the reference object
+            x = ref_object.position[0] + ref_object.bbox[0]
+            y = ref_object.position[1]
+            z = ref_object.position[2]
         
-        # Analyze and log graph structure
-        logger.info("\nAnalyzing scene graph structure:")
+        return (x, y, z)
+
+    def simple_scale_and_place(self, object_states: Dict[str, ObjectState]) -> Dict[str, ObjectState]:
+        """Simply scale objects and place them at random positions."""
+        logger.info(f"\n{'='*80}")
+        logger.info("Starting Simple Scale and Place")
+        logger.info(f"{'='*80}")
+        logger.info(f"Processing {len(object_states)} objects")
         
-        # Find root objects (likely furniture/tables)
-        roots = [n for n in G.nodes() if G.in_degree(n) == 0]
-        logger.info(f"Root objects (no incoming edges): {roots}")
+        self.objects = object_states.copy()
         
-        # Find leaf objects (no outgoing edges)
-        leaves = [n for n in G.nodes() if G.out_degree(n) == 0]
-        logger.info(f"Leaf objects (no outgoing edges): {leaves}")
+        # 1. Apply default dimensions to all objects
+        logger.info("\n=== 1. Setting Object Dimensions ===")
+        default_dims = {
+            'Table': (1.2, 0.8, 0.75),    # Standard desk size
+            'Monitor': (0.6, 0.1, 0.4),   # Standard monitor
+            'Keyboard': (0.45, 0.15, 0.03), # Standard keyboard
+            'Mouse': (0.12, 0.07, 0.04),   # Standard mouse
+            'Chair': (0.6, 0.6, 1.0),      # Standard chair
+            'default': (0.5, 0.5, 0.5)     # Default for unknown objects
+        }
         
-        # Identify support hierarchies
-        support_hierarchies = defaultdict(list)
-        for rel in support_relations:
-            support_hierarchies[rel.target].append(rel.source)
+        for name, state in self.objects.items():
+            try:
+                # Get object type from name
+                obj_type = name.split('_')[0]
+                # Apply dimensions
+                state.bbox = default_dims.get(obj_type, default_dims['default'])
+                logger.info(f"Set {name} dimensions to: {state.bbox}")
+            except Exception as e:
+                logger.error(f"Error setting dimensions for {name}: {e}")
+                state.bbox = default_dims['default']
         
-        logger.info("\nSupport hierarchies:")
-        for parent, children in support_hierarchies.items():
-            logger.info(f"  {parent} supports: {children}")
+        # 2. Place objects in a random grid
+        logger.info("\n=== 2. Placing Objects ===")
+        grid_size = 3.0  # 3x3 meter area
+        grid_cells = 3   # 3x3 grid
+        cell_size = grid_size / grid_cells
         
-        # Find spatial relationships between siblings
-        sibling_relations = []
-        for rel in spatial_relations:
-            # Check if objects share same parent
-            source_parents = set(G.predecessors(rel.source))
-            target_parents = set(G.predecessors(rel.target))
-            if source_parents & target_parents:  # If they share any parents
-                sibling_relations.append(rel)
+        import random
+        random.seed(42)  # For reproducibility
         
-        logger.info("\nSpatial relationships between siblings:")
-        for rel in sibling_relations:
-            logger.info(f"  {rel.source} {rel.relation} {rel.target}")
+        used_positions = set()
+        for name, state in self.objects.items():
+            try:
+                # Try to find an unused grid cell
+                attempts = 0
+                while attempts < 10:  # Maximum 10 attempts per object
+                    # Generate random grid position
+                    grid_x = random.randint(0, grid_cells-1)
+                    grid_y = random.randint(0, grid_cells-1)
+                    pos = (grid_x, grid_y)
+                    
+                    if pos not in used_positions:
+                        used_positions.add(pos)
+                        # Convert grid position to world coordinates
+                        x = (grid_x - grid_cells/2) * cell_size
+                        y = (grid_y - grid_cells/2) * cell_size
+                        z = state.bbox[2]/2  # Place at half height
+                        
+                        state.position = (x, y, z)
+                        logger.info(f"Placed {name} at grid {pos}, world position: {state.position}")
+                        break
+                    
+                    attempts += 1
+                
+                if attempts == 10:
+                    # If no free position found, place at a slightly offset position
+                    x = random.uniform(-grid_size/2, grid_size/2)
+                    y = random.uniform(-grid_size/2, grid_size/2)
+                    z = state.bbox[2]/2
+                    state.position = (x, y, z)
+                    logger.info(f"Placed {name} at fallback position: {state.position}")
+                
+            except Exception as e:
+                logger.error(f"Error placing {name}: {e}")
+                # Use fallback position
+                state.position = (0.0, 0.0, 0.5)
         
-        # Detect any cycles or conflicts
+        # 3. Generate visualization
+        logger.info("\n=== 3. Generating Visualization ===")
         try:
-            cycles = list(nx.simple_cycles(G))
-            if cycles:
-                logger.warning(f"Detected cycles in relationships: {cycles}")
-        except nx.NetworkXNoCycle:
-            logger.info("No relationship cycles detected")
+            final_objects = [
+                {
+                    'name': name,
+                    'position': [float(p) for p in state.position] if state.position else [0, 0, 0],
+                    'dimensions': [float(d) for d in state.bbox] if state.bbox else [0.1, 0.1, 0.1]
+                }
+                for name, state in self.objects.items()
+            ]
+            visualize_scene_plan(final_objects, "simple_placement_scene.png")
+            logger.info("\nGenerated scene visualization: simple_placement_scene.png")
+        except Exception as e:
+            logger.error(f"Error generating visualization: {e}")
         
-        # Visualize the graph
-        plt.figure(figsize=(12, 8))
-        pos = nx.spring_layout(G, k=1, iterations=50)  # k controls spacing
-        
-        # Draw nodes
-        nx.draw_networkx_nodes(G, pos, 
-                             node_color='lightblue',
-                             node_size=2000,
-                             alpha=0.7)
-        
-        # Draw edges with different colors for different relationship types
-        edges = list(G.edges())
-        nx.draw_networkx_edges(G, pos, 
-                             edgelist=edges,
-                             edge_color=edge_colors,
-                             arrows=True,
-                             arrowsize=20)
-        
-        # Add node labels
-        nx.draw_networkx_labels(G, pos,
-                              font_size=10,
-                              font_weight='bold')
-        
-        # Add edge labels
-        nx.draw_networkx_edge_labels(G, pos,
-                                   edge_labels=edge_labels,
-                                   font_size=8)
-        
-        # Add legend
-        plt.plot([], [], 'r-', label='Support Relation')
-        plt.plot([], [], 'b-', label='Spatial Relation')
-        plt.legend()
-        
-        plt.title("Scene Graph Structure")
-        plt.axis('off')
-        
-        # Save the graph visualization
-        plt.savefig('scene_graph.png', bbox_inches='tight', dpi=300)
-        plt.close()
-        
-        logger.info("\nGraph visualization saved as 'scene_graph.png'")
-        
-        # Combine support and spatial relations, prioritizing support relations
-        all_relations = support_relations + spatial_relations
-        
-        return objects, all_relations
-        
-    except Exception as e:
-        logger.error(f"Failed to parse LLM output: {str(e)}")
-        logger.error(f"Traceback: {traceback.format_exc()}")
-        raise ValueError(f"Invalid LLM output format: {str(e)}")
+        logger.info(f"\n{'='*80}\n")
+        return self.objects

@@ -94,6 +94,15 @@ class PartNetManager:
         self.dataset_dir = self.partnet_root / "dataset"  # Dataset is directly in the root
         self.stats = PipelineStats()
         
+        # Add category mapping for common aliases
+        self.category_mapping = {
+            "Monitor": "Display",
+            "Screen": "Display",
+            "ComputerMonitor": "Display",
+            "LCD": "Display",
+            "LED": "Display"
+        }
+        
         logger.info(f"Initializing PartNetManager with root: {partnet_root}")
         
         try:
@@ -355,9 +364,18 @@ class PartNetManager:
         
         print("\nMatching scene objects to PartNet categories...")
         
+        # Track object type counts for unique naming
+        type_counts = defaultdict(int)
+        
         for obj in scene_graph.objects:
             match = self._find_match_for_object(obj)
             if match:
+                # Update object name to ensure uniqueness
+                base_name = match.scene_object.name
+                type_counts[base_name] += 1
+                if type_counts[base_name] > 1:
+                    match.scene_object.name = f"{base_name}_{type_counts[base_name]}"
+                
                 # Extract joint data
                 joint_data = self._extract_joint_data(match.urdf_path)
                 match.joint_data = joint_data
@@ -375,14 +393,26 @@ class PartNetManager:
                     "dimensions": self._calculate_object_dimensions(bbox_data)
                 }
                 
+                # Update spatial relationships with new object name if it was changed
+                if match.scene_object.name != base_name:
+                    updated_relations = []
+                    for rel in scene_graph.relationships:
+                        if rel.source == base_name:
+                            rel.source = match.scene_object.name
+                        if rel.target == base_name:
+                            rel.target = match.scene_object.name
+                        updated_relations.append(rel)
+                    scene_graph.relationships = updated_relations
+                
                 # Store spatial relationships
                 match.spatial_data = {
                     "relations": [rel for rel in scene_graph.relationships 
-                                if rel.source == obj.name or rel.target == obj.name]
+                                if rel.source == match.scene_object.name or 
+                                rel.target == match.scene_object.name]
                 }
                 
                 matches.append(match)
-                print(f"Found match for {obj.name}: {match.category} ({match.urdf_path})")
+                print(f"Found match for {match.scene_object.name}: {match.category} ({match.urdf_path})")
                 print(f"  Match confidence: {match.similarity_score:.3f}")
                 print(f"  Match details: {match.match_description}")
                 if bbox_data:
@@ -405,12 +435,33 @@ class PartNetManager:
         logger.info(f"Finding match for object: {obj.name} ({obj.category})")
         
         try:
+            # Map category if it has an alias
+            mapped_category = self.category_mapping.get(obj.category, obj.category)
+            logger.info(f"Category mapping: {obj.category} -> {mapped_category}")
+            
             # Try exact category match first
-            category = self._clean_category_name(obj.category)
+            category = self._clean_category_name(mapped_category)
             if category in self.object_cache:
                 self.stats.exact_matches += 1
                 logger.info(f"Found exact match: {category}")
-                obj_id, urdf_path = random.choice(self.object_cache[category])
+                
+                # For displays, try to get a unique one if possible
+                if category == "Display":
+                    used_displays = getattr(self, '_used_displays', set())
+                    available_displays = [(obj_id, path) for obj_id, path in self.object_cache[category] 
+                                       if obj_id not in used_displays]
+                    
+                    if available_displays:
+                        obj_id, urdf_path = random.choice(available_displays)
+                        if not hasattr(self, '_used_displays'):
+                            self._used_displays = set()
+                        self._used_displays.add(obj_id)
+                    else:
+                        # If all displays are used, just pick a random one
+                        obj_id, urdf_path = random.choice(self.object_cache[category])
+                else:
+                    obj_id, urdf_path = random.choice(self.object_cache[category])
+                
                 return PartNetMatch(
                     obj, urdf_path, category, obj_id, 
                     similarity_score=1.0,
@@ -782,236 +833,199 @@ class PartNetManager:
         # This would merge individual URDFs with proper transformations
         pass
 
-    def update_object_scale(self, obj_id: str, scale_factors: Tuple[float, float, float], image_info: Optional[Dict] = None, restore_after: bool = False) -> bool:
-        """Update object scale by modifying URDF and mesh files.
+    def set_object_dimensions(self, obj_id: str, dimensions: Tuple[float, float, float], image_info: Optional[Dict] = None) -> bool:
+        """Set exact dimensions for an object by modifying URDF and mesh files.
         
         Args:
             obj_id: PartNet object ID
-            scale_factors: (scale_x, scale_y, scale_z) scaling factors
+            dimensions: (width, length, height) in meters
             image_info: Optional dict containing image paths and bounding box info
-            restore_after: If True, restore original files after scaling is applied
-            
-        Returns:
-            bool: True if update was successful
         """
         try:
             urdf_path = os.path.join(self.dataset_dir, obj_id, "mobility.urdf")
             if not os.path.exists(urdf_path):
                 logger.error(f"URDF file not found for object {obj_id}")
                 return False
-                
-            # Parse URDF
-            tree = ET.parse(urdf_path)
-            root = tree.getroot()
-            
-            # Update all links
-            for link in root.findall(".//link"):
-                # Scale visual geometries
-                for visual in link.findall(".//visual"):
-                    self._scale_geometry(visual, scale_factors)
-                
-                # Scale collision geometries
-                for collision in link.findall(".//collision"):
-                    self._scale_geometry(collision, scale_factors)
-                
-                # Update or create inertial properties
-                inertial = link.find("inertial")
-                if inertial is None:
-                    inertial = ET.SubElement(link, "inertial")
-                self._scale_inertial(inertial, scale_factors)
-            
-            # Scale joint origins and limits
-            for joint in root.findall(".//joint"):
-                origin = joint.find("origin")
-                if origin is not None:
-                    xyz = origin.get("xyz", "0 0 0").split()
-                    new_xyz = [float(x) * s for x, s in zip(xyz, scale_factors)]
-                    origin.set("xyz", f"{new_xyz[0]} {new_xyz[1]} {new_xyz[2]}")
-                
-                # Scale joint limits if present
-                limit = joint.find("limit")
-                if limit is not None:
-                    # Scale effort and velocity limits proportionally to mass
-                    volume_scale = scale_factors[0] * scale_factors[1] * scale_factors[2]
-                    
-                    if "effort" in limit.attrib:
-                        effort = float(limit.get("effort"))
-                        limit.set("effort", str(effort * volume_scale))
-                    
-                    if "velocity" in limit.attrib:
-                        velocity = float(limit.get("velocity"))
-                        limit.set("velocity", str(velocity * volume_scale))
-            
-            # Backup original URDF
+
+            # Backup original files
             backup_path = urdf_path + ".backup"
             if not os.path.exists(backup_path):
                 import shutil
                 shutil.copy2(urdf_path, backup_path)
-            
+
+            # Get current dimensions
+            current_dims = self._get_mesh_dimensions_for_id(obj_id)
+            if not current_dims:
+                logger.error(f"Could not get current dimensions for {obj_id}")
+                return False
+
+            # Calculate transform ratios
+            transform = (
+                dimensions[0] / current_dims[0],
+                dimensions[1] / current_dims[1],
+                dimensions[2] / current_dims[2]
+            )
+
+            # Update URDF
+            tree = ET.parse(urdf_path)
+            root = tree.getroot()
+
+            # Update all links
+            for link in root.findall(".//link"):
+                # Update visual geometries
+                for visual in link.findall(".//visual"):
+                    self._transform_geometry(visual, transform, dimensions)
+
+                # Update collision geometries
+                for collision in link.findall(".//collision"):
+                    self._transform_geometry(collision, transform, dimensions)
+
+                # Update inertial properties
+                inertial = link.find("inertial")
+                if inertial is None:
+                    inertial = ET.SubElement(link, "inertial")
+                self._update_inertial(inertial, dimensions)
+
+            # Update joint origins
+            for joint in root.findall(".//joint"):
+                origin = joint.find("origin")
+                if origin is not None:
+                    xyz = origin.get("xyz", "0 0 0").split()
+                    new_xyz = [float(x) * t for x, t in zip(xyz, transform)]
+
             # Save modified URDF
             tree.write(urdf_path, xml_declaration=True, encoding='utf-8')
-            
-            # Scale mesh files
+
+            # Update mesh files
             mesh_dir = os.path.join(self.dataset_dir, obj_id, "textured_objs")
             if os.path.exists(mesh_dir):
                 for mesh_file in os.listdir(mesh_dir):
                     if mesh_file.endswith(".obj"):
-                        self._scale_mesh_file(
+                        self._transform_mesh(
                             os.path.join(mesh_dir, mesh_file),
-                            scale_factors,
-                            image_info=image_info
+                            transform,
+                            dimensions
                         )
-            
-            logger.info(f"Successfully updated scale for object {obj_id}")
-            
-            # Restore original files if requested
-            if restore_after:
-                logger.info(f"Restoring original files for object {obj_id}")
-                return self.restore_original_files(obj_id)
-            
+
+            logger.info(f"Successfully updated dimensions for object {obj_id}")
             return True
-            
+
         except Exception as e:
-            logger.error(f"Error updating scale for object {obj_id}: {str(e)}")
+            logger.error(f"Error updating dimensions for object {obj_id}: {str(e)}")
             logger.error(f"Traceback: {traceback.format_exc()}")
             return False
-    
-    def _scale_geometry(self, geom_elem: ET.Element, scale_factors: Tuple[float, float, float]):
-        """Scale geometry element in URDF."""
-        # Get geometry element
+
+    def _transform_geometry(self, geom_elem: ET.Element, transform: Tuple[float, float, float], dimensions: Tuple[float, float, float]):
+        """Transform geometry element in URDF with exact dimensions."""
         geometry = geom_elem.find("geometry")
         if geometry is None:
             return
-            
-        # Scale based on geometry type
+
         if geometry.find("box") is not None:
             box = geometry.find("box")
-            size = box.get("size", "1 1 1").split()
-            new_size = [float(s) * f for s, f in zip(size, scale_factors)]
-            box.set("size", f"{new_size[0]} {new_size[1]} {new_size[2]}")
-            
+            box.set("size", f"{dimensions[0]} {dimensions[1]} {dimensions[2]}")
+
         elif geometry.find("cylinder") is not None:
             cylinder = geometry.find("cylinder")
-            radius = float(cylinder.get("radius", "1"))
-            length = float(cylinder.get("length", "1"))
-            # Use average of x and y scale for radius
-            new_radius = radius * (scale_factors[0] + scale_factors[1]) / 2
-            new_length = length * scale_factors[2]
-            cylinder.set("radius", str(new_radius))
-            cylinder.set("length", str(new_length))
-            
+            # Use average of width and length for radius
+            radius = (dimensions[0] + dimensions[1]) / 4
+            cylinder.set("radius", str(radius))
+            cylinder.set("length", str(dimensions[2]))
+
         elif geometry.find("sphere") is not None:
             sphere = geometry.find("sphere")
-            radius = float(sphere.get("radius", "1"))
-            # Use average scale
-            new_radius = radius * sum(scale_factors) / 3
-            sphere.set("radius", str(new_radius))
-            
+            # Use average dimension for radius
+            radius = sum(dimensions) / 6
+            sphere.set("radius", str(radius))
+
         elif geometry.find("mesh") is not None:
             mesh = geometry.find("mesh")
-            scale = mesh.get("scale", "1 1 1").split()
-            current_scale = [float(s) for s in scale]
-            new_scale = [c * f for c, f in zip(current_scale, scale_factors)]
-            mesh.set("scale", f"{new_scale[0]} {new_scale[1]} {new_scale[2]}")
-    
-    def _scale_inertial(self, inertial_elem: ET.Element, scale_factors: Tuple[float, float, float]):
-        """Scale inertial properties in URDF using standard formulas.
-        
-        For each link, we:
-        1. Scale mass based on volume change
-        2. Calculate inertia tensor using standard formulas for box-shaped objects
-        3. Apply parallel axis theorem for offset inertias
-        """
-        # Get origin offset if it exists
+            mesh.set("scale", f"{transform[0]} {transform[1]} {transform[2]}")
+
+    def _update_inertial(self, inertial_elem: ET.Element, dimensions: Tuple[float, float, float]):
+        """Update inertial properties based on new dimensions."""
+        # Set origin to center of mass
         origin = inertial_elem.find("origin")
-        offset = [0.0, 0.0, 0.0]
-        if origin is not None:
-            xyz = origin.get("xyz", "0 0 0").split()
-            offset = [float(x) * s for x, s in zip(xyz, scale_factors)]
-            origin.set("xyz", f"{offset[0]} {offset[1]} {offset[2]}")
-        
-        # Scale mass (proportional to volume)
+        if origin is None:
+            origin = ET.SubElement(inertial_elem, "origin")
+        origin.set("xyz", "0 0 0")
+        origin.set("rpy", "0 0 0")
+
+        # Calculate mass based on volume (assuming uniform density)
+        volume = dimensions[0] * dimensions[1] * dimensions[2]
+        density = 1000  # kg/m³ (default density)
+        mass = volume * density
+
+        # Set mass
         mass_elem = inertial_elem.find("mass")
-        if mass_elem is not None:
-            mass = float(mass_elem.get("value", "1"))
-            volume_scale = scale_factors[0] * scale_factors[1] * scale_factors[2]
-            new_mass = mass * volume_scale
-            mass_elem.set("value", str(new_mass))
-        else:
-            new_mass = 1.0  # Default mass if not specified
+        if mass_elem is None:
             mass_elem = ET.SubElement(inertial_elem, "mass")
-            mass_elem.set("value", str(new_mass))
-        
-        # Calculate base inertia tensor for box shape
-        # Using standard formulas: I = (1/12) * m * (h^2 + d^2) for each axis
-        sx, sy, sz = scale_factors
-        
-        # Calculate dimensions (assuming unit base dimensions)
-        width = sx
-        length = sy
-        height = sz
-        
-        # Calculate base inertia tensor (at center of mass)
-        ixx = (new_mass / 12.0) * (length * length + height * height)
-        iyy = (new_mass / 12.0) * (width * width + height * height)
-        izz = (new_mass / 12.0) * (width * width + length * length)
-        
-        # Apply parallel axis theorem for offset inertias
-        if any(offset):
-            # I = I_cm + m * (r^2 * I - r⊗r)
-            d_squared = sum(x*x for x in offset)
-            ixx += new_mass * (d_squared - offset[0]*offset[0])
-            iyy += new_mass * (d_squared - offset[1]*offset[1])
-            izz += new_mass * (d_squared - offset[2]*offset[2])
-            
-            # Calculate products of inertia
-            ixy = -new_mass * offset[0] * offset[1]
-            ixz = -new_mass * offset[0] * offset[2]
-            iyz = -new_mass * offset[1] * offset[2]
-        else:
-            ixy = ixz = iyz = 0.0
-        
-        # Update or create inertia element
+        mass_elem.set("value", str(mass))
+
+        # Calculate inertia tensor for a box
+        width, length, height = dimensions
+        ixx = (mass / 12.0) * (length * length + height * height)
+        iyy = (mass / 12.0) * (width * width + height * height)
+        izz = (mass / 12.0) * (width * width + length * length)
+
+        # Set inertia values
         inertia = inertial_elem.find("inertia")
         if inertia is None:
             inertia = ET.SubElement(inertial_elem, "inertia")
-        
-        # Set inertia values
-        inertia.set("ixx", str(max(0.001, ixx)))  # Ensure positive non-zero values
+
+        inertia.set("ixx", str(max(0.001, ixx)))
         inertia.set("iyy", str(max(0.001, iyy)))
         inertia.set("izz", str(max(0.001, izz)))
-        inertia.set("ixy", str(ixy))
-        inertia.set("ixz", str(ixz))
-        inertia.set("iyz", str(iyz))
-    
-    def _scale_mesh_file(self, mesh_path: str, scale_factors: Tuple[float, float, float], image_info: Optional[Dict] = None):
-        """Scale vertices in OBJ file."""
-        # Backup original mesh
-        backup_path = mesh_path + ".backup"
-        if not os.path.exists(backup_path):
-            import shutil
-            shutil.copy2(mesh_path, backup_path)
-        
-        # Read and scale vertices
-        with open(mesh_path, 'r') as f:
-            lines = f.readlines()
-        
-        # Process lines and scale vertices
-        new_lines = []
-        for line in lines:
-            if line.startswith('v '):  # Vertex line
-                parts = line.split()
-                if len(parts) >= 4:  # Ensure we have x, y, z coordinates
-                    x = float(parts[1]) * scale_factors[0]
-                    y = float(parts[2]) * scale_factors[1]
-                    z = float(parts[3]) * scale_factors[2]
-                    new_lines.append(f"v {x} {y} {z}\n")
-            else:
-                new_lines.append(line)
-        
-        # Write scaled mesh
-        with open(mesh_path, 'w') as f:
-            f.writelines(new_lines)
+        inertia.set("ixy", "0")
+        inertia.set("ixz", "0")
+        inertia.set("iyz", "0")
+
+    def _transform_mesh(self, mesh_path: str, transform: Tuple[float, float, float], dimensions: Tuple[float, float, float]):
+        """Transform mesh vertices to match exact dimensions."""
+        try:
+            import trimesh
+
+            # Backup original mesh if not already backed up
+            backup_path = mesh_path + ".backup"
+            if not os.path.exists(backup_path):
+                import shutil
+                shutil.copy2(mesh_path, backup_path)
+
+            # Load mesh
+            mesh = trimesh.load(mesh_path)
+            if not isinstance(mesh, trimesh.Trimesh):
+                logger.warning(f"Could not load {mesh_path} as a trimesh object")
+                return False
+
+            # Create transformation matrix
+            scale_matrix = np.eye(4)
+            scale_matrix[0, 0] = transform[0]
+            scale_matrix[1, 1] = transform[1]
+            scale_matrix[2, 2] = transform[2]
+
+            # Apply transformation
+            mesh.apply_transform(scale_matrix)
+
+            # Export transformed mesh
+            export_options = {}
+            if mesh_path.lower().endswith('.obj'):
+                export_options = {
+                    'vertex_normal': True,
+                    'include_texture': True,
+                    'include_materials': True,
+                    'resolver': trimesh.resolvers.FilePathResolver()
+                }
+
+            mesh.export(mesh_path, **export_options)
+            logger.info(f"Successfully transformed mesh: {mesh_path}")
+            logger.info(f"  New dimensions: {[f'{x:.3f}' for x in dimensions]}")
+            return True
+
+        except Exception as e:
+            logger.error(f"Error transforming mesh {mesh_path}: {str(e)}")
+            if os.path.exists(backup_path):
+                shutil.copy2(backup_path, mesh_path)
+            return False
 
     def restore_original_files(self, obj_id: str) -> bool:
         """Restore original URDF and mesh files from backups.

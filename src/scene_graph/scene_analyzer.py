@@ -50,11 +50,11 @@ def analyze_scene_image(image_paths: List[str], prompt: Optional[str] = None) ->
     # Initialize OpenAI client
     client = OpenAI()
     
-    # Prepare default prompt if none provided
+    # Removed camera, and updated display as monitor
     if prompt is None:
         valid_categories = [
             "Bottle", "Box", "Bucket", "Cart", "Chair", "Clock", 
-            "CoffeeMachine", "Dishwasher", "Dispenser", "Display/Monitor`", "Door", 
+            "CoffeeMachine", "Dishwasher", "Dispenser", "Monitor`", "Door", 
             "Eyeglasses", "Fan", "Faucet", "FoldingChair", "Globe", "Kettle", 
             "Keyboard", "KitchenPot", "Knife", "Lamp", "Laptop", "Lighter", 
             "Microwave", "Mouse", "Oven", "Pen", "Phone", "Pliers", "Printer", 
